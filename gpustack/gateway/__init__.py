@@ -2,7 +2,7 @@ import time
 import asyncio
 import base64
 import os
-from typing import Any, Dict, Tuple, List
+from typing import Any, Dict, Tuple, List, Optional
 from kubernetes_asyncio import client as k8s_client
 from kubernetes_asyncio.client import Configuration
 from kubernetes_asyncio.config.kube_config import KubeConfigLoader, KubeConfigMerger
@@ -40,10 +40,45 @@ supported_openai_routes = [
     route for v in openai_model_prefixes for route in v.flattened_prefixes()
 ]
 
+async_gateway_config: Configuration = None
+
+
+def init_async_k8s_config(cfg: Config):
+    if cfg.gateway_mode == GatewayModeEnum.disabled:
+        return
+    global async_gateway_config
+    if async_gateway_config is not None:
+        return
+    configuration = Configuration()
+    if cfg.gateway_mode == GatewayModeEnum.incluster:
+        cfg_loader = InClusterConfigLoader(
+            token_filename=SERVICE_TOKEN_FILENAME,
+            cert_filename=SERVICE_CERT_FILENAME,
+        )
+        cfg_loader.load_and_set(configuration)
+    else:
+        cfg_loader = KubeConfigLoader(
+            config_dict=KubeConfigMerger(cfg.gateway_kubeconfig).config
+        )
+        if not cfg_loader._load_user_token():
+            cfg_loader._load_user_pass_token()
+        cfg_loader._load_cluster_info()
+        cfg_loader._set_config(configuration)
+    async_gateway_config = configuration
+
+
+def get_async_k8s_config(cfg: Config) -> Optional[Configuration]:
+    if cfg.gateway_mode == GatewayModeEnum.disabled:
+        return None
+    global async_gateway_config
+    if async_gateway_config is None:
+        init_async_k8s_config(cfg=cfg)
+    return async_gateway_config
+
 
 def wait_for_apiserver_ready(cfg: Config, timeout: int = 60, interval: int = 5):
     async def get_api_resources():
-        config = cfg.get_async_k8s_config()
+        config = get_async_k8s_config(cfg)
         start = time.time()
         v1 = k8s_client.CoreV1Api(k8s_client.ApiClient(configuration=config))
         while True:
@@ -62,9 +97,11 @@ def wait_for_apiserver_ready(cfg: Config, timeout: int = 60, interval: int = 5):
 
 
 def get_gpustack_higress_registry(cfg: Config) -> McpBridgeRegistry:
+    # this is only for non-incluster mode.
+    # In this case, the related resource will be installed into gateway namespace.
     # default to incluster mode
     registry_type = "dns"
-    domain = f"{cfg.service_discovery_name}.{cfg.get_gateway_namespace()}.svc"
+    domain = f"{cfg.service_discovery_name}.{cfg.gateway_namespace}.svc"
     if cfg.gateway_mode != GatewayModeEnum.incluster:
         registry_type = "static"
         port = cfg.get_api_port()
@@ -92,7 +129,7 @@ def get_gpustack_higress_registry(cfg: Config) -> McpBridgeRegistry:
 async def ensure_mcp_resources(cfg: Config, api_client: k8s_client.ApiClient):
     api = gw_client.NetworkingHigressIoV1Api(api_client)
     # use default name for embedded mode
-    gateway_namespace = cfg.get_gateway_namespace()
+    gateway_namespace = cfg.gateway_namespace
     try:
         data: Dict[str, Any] = await api.get_mcpbridge(
             namespace=gateway_namespace, name=default_mcp_bridge_name
@@ -149,7 +186,7 @@ async def ensure_ingress_resources(cfg: Config, api_client: k8s_client.ApiClient
     """
     Ensure the ingress resources to route traffic to mcpbridge are created.
     """
-    gateway_namespace = cfg.get_gateway_namespace()
+    gateway_namespace = cfg.gateway_namespace
     hostname = cfg.get_external_hostname()
     tls_secret_name = cfg.get_tls_secret_name()
     network_v1_client = k8s_client.NetworkingV1Api(api_client=api_client)
@@ -378,7 +415,7 @@ async def ensure_tls_secret(cfg: Config, api_client: k8s_client.ApiClient):
     ssl_key_data = base64.b64encode(ssl_key_bytes).decode()
     ssl_cert_data = base64.b64encode(ssl_cert_bytes).decode()
 
-    gateway_namespace = cfg.get_gateway_namespace()
+    gateway_namespace = cfg.gateway_namespace
     core_v1_client = k8s_client.CoreV1Api(api_client=api_client)
     secret_name = cfg.get_tls_secret_name()
     to_create_tls_secret = k8s_client.V1Secret(
@@ -415,29 +452,10 @@ async def ensure_tls_secret(cfg: Config, api_client: k8s_client.ApiClient):
             )
 
 
-def set_async_k8s_config(cfg: Config):
-    configuration = Configuration()
-    if cfg.gateway_mode == GatewayModeEnum.incluster:
-        cfg_loader = InClusterConfigLoader(
-            token_filename=SERVICE_TOKEN_FILENAME,
-            cert_filename=SERVICE_CERT_FILENAME,
-        )
-        cfg_loader.load_and_set(configuration)
-    else:
-        cfg_loader = KubeConfigLoader(
-            config_dict=KubeConfigMerger(cfg.gateway_kubeconfig).config
-        )
-        if not cfg_loader._load_user_token():
-            cfg_loader._load_user_pass_token()
-        cfg_loader._load_cluster_info()
-        cfg_loader._set_config(configuration)
-    cfg.set_async_k8s_config(configuration)
-
-
 def initialize_gateway(cfg: Config, timeout: int = 60, interval: int = 5):
     if cfg.gateway_mode == GatewayModeEnum.disabled:
         return
-    set_async_k8s_config(cfg=cfg)
+    init_async_k8s_config(cfg=cfg)
     wait_for_apiserver_ready(cfg=cfg, timeout=timeout, interval=interval)
     if cfg.gateway_mode in [
         GatewayModeEnum.embedded,
@@ -453,7 +471,9 @@ def initialize_gateway(cfg: Config, timeout: int = 60, interval: int = 5):
             plugin_list.append(token_usage_plugin(cfg=cfg))
 
         async def prepare():
-            api_client = k8s_client.ApiClient(configuration=cfg.get_async_k8s_config())
+            api_client = k8s_client.ApiClient(
+                configuration=get_async_k8s_config(cfg=cfg)
+            )
             await ensure_tls_secret(cfg=cfg, api_client=api_client)
             await ensure_mcp_resources(cfg=cfg, api_client=api_client)
             await ensure_ingress_resources(cfg=cfg, api_client=api_client)
@@ -461,7 +481,7 @@ def initialize_gateway(cfg: Config, timeout: int = 60, interval: int = 5):
                 await ensure_wasm_plugin(
                     api=gw_client.ExtensionsHigressIoV1Api(api_client),
                     name=plugin_name,
-                    namespace=cfg.get_gateway_namespace(),
+                    namespace=cfg.gateway_namespace,
                     expected=plugin_spec,
                 )
 
