@@ -132,10 +132,7 @@ async def collect_worker_logs(
                 # Generate GPU ID for log
                 gpu_type = gpu.type if gpu.type else "unknown"
                 gpu_id = f"{worker.name}:{gpu_type}:{gpu_index}"
-                # 打印出来是否包含log属性，以及log属性的类型,以及对应的log属性值
-                print(f"GPU {gpu_id} log attribute value: {gpu.log}")
                 if hasattr(gpu, 'log') and gpu.log:
-
                     for log_entry in gpu.log:
                         gpu_log = GPULogCreate(
                             worker_id=worker.id,

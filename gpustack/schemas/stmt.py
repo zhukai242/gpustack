@@ -25,7 +25,8 @@ SELECT
     json_extract(value, '$.core') AS 'core',
     json_extract(value, '$.memory') AS 'memory',
     json_extract(value, '$.temperature') AS 'temperature',
-    json_extract(value, '$.network') AS 'network'
+    json_extract(value, '$.network') AS 'network',
+    json_extract(value, '$.log') AS 'log'
 FROM
     workers w,
     json_each(w.status, '$.gpu_devices')
@@ -60,7 +61,8 @@ SELECT
     JSON_EXTRACT(gpu_device, '$.core') AS `core`,
     JSON_EXTRACT(gpu_device, '$.memory') AS `memory`,
     CAST(COALESCE(JSON_VALUE(gpu_device, '$.temperature'), '0') AS DECIMAL(10, 2)) AS `temperature`,
-    JSON_EXTRACT(gpu_device, '$.network') AS `network`
+    JSON_EXTRACT(gpu_device, '$.network') AS `network`,
+    JSON_EXTRACT(gpu_device, '$.log') AS `log`
 FROM
     workers w,
     JSON_TABLE(w.status, '$.gpu_devices[*]' COLUMNS(
@@ -98,7 +100,8 @@ SELECT
     (gpu_device::json->>'core')::JSONB AS "core",
     (gpu_device::json->>'memory')::JSONB AS "memory",
     (gpu_device::json->>'temperature')::FLOAT AS "temperature",
-    (gpu_device::json->>'network')::JSONB AS "network"
+    (gpu_device::json->>'network')::JSONB AS "network",
+    (gpu_device::json->>'log')::JSONB AS "log"
 FROM
     workers w,
     LATERAL json_array_elements(w.status::json->'gpu_devices') AS gpu_device
