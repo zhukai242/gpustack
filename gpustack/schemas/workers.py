@@ -135,6 +135,10 @@ class GPUDeviceInfo(BaseModel):
     """
     Network information of the GPU device, mainly for Ascend devices.
     """
+    log: Optional[List[Dict[str, Any]]] = Field(sa_column=Column(JSON), default=None)
+    """
+    Log information of the GPU device.
+    """
 
 
 GPUDevicesInfo = List[GPUDeviceInfo]
@@ -252,6 +256,10 @@ class WorkerStatus(SystemInfo):
     rpc_servers: Optional[Dict[int, RPCServer]] = Field(
         sa_column=Column(JSON), default=None
     )
+    log: Optional[List[Dict[str, Any]]] = Field(sa_column=Column(JSON), default=None)
+    """
+    Log information of the worker.
+    """
 
     model_config = ConfigDict(from_attributes=True)
 

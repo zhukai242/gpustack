@@ -9,6 +9,7 @@ from gpustack.routes import (
     draft_models,
     gpu_devices,
     inference_backend,
+    logs,
     metrics,
     model_evaluations,
     model_files,
@@ -132,6 +133,7 @@ admin_routers = model_routers + [
         "tags": ["Model Evaluations"],
     },
     {"router": gpu_devices.router, "prefix": "/gpu-devices", "tags": ["GPU Devices"]},
+    {"router": logs.router, "prefix": "/logs", "tags": ["Logs"]},
     # following routers are introduced by gpustack v2.0
     {
         "router": cloud_credentials.router,

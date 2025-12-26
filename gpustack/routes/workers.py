@@ -356,7 +356,9 @@ async def delete_worker(session: SessionDep, id: int):
 
 
 async def create_worker_status(
-    user: CurrentUserDep, session: SessionDep, input: WorkerStatusPublic
+    user: CurrentUserDep,
+    session: SessionDep,
+    input: WorkerStatusPublic,
 ):
     if user.worker is None:
         raise ForbiddenException(message="Failed to find related worker")

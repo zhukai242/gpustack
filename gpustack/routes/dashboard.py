@@ -17,6 +17,12 @@ from gpustack.schemas.dashboard import (
     SystemLoadSummary,
     SystemSummary,
     TimeSeriesData,
+    WorkerLoadSummary,
+    GPULoadSummary,
+    CurrentWorkerLoad,
+    HistoryWorkerLoad,
+    CurrentGPULoad,
+    HistoryGPULoad,
 )
 from gpustack.schemas.model_usage import ModelUsage
 from gpustack.schemas.models import Model, ModelInstance
@@ -24,6 +30,7 @@ from gpustack.schemas.system_load import SystemLoad
 from gpustack.schemas.users import User
 from gpustack.server.deps import SessionDep
 from gpustack.schemas import Worker, Cluster
+from gpustack.schemas.load import WorkerLoad, GPULoad
 from gpustack.server.system_load import compute_system_load
 
 router = APIRouter()
@@ -478,4 +485,178 @@ async def usage_stats(
         end_date=end_date,
         model_ids=model_ids,
         user_ids=user_ids,
+    )
+
+
+@router.get("/worker-load/{worker_id}")
+async def worker_load(
+    session: SessionDep,
+    worker_id: int,
+):
+    """
+    Get worker usage trends.
+    This endpoint returns the current and historical usage data for a specific worker.
+    """
+    # Get current worker status
+    worker = await Worker.one_by_id(session, worker_id)
+    if not worker:
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=404, detail="Worker not found")
+
+    # Calculate current load from worker status
+    current_cpu = (
+        worker.status.cpu.utilization_rate if worker.status and worker.status.cpu else 0
+    )
+    current_ram = (
+        worker.status.memory.utilization_rate
+        if worker.status and worker.status.memory
+        else 0
+    )
+
+    # Calculate average GPU/VRAM for this worker
+    current_gpu = 0
+    current_vram = 0
+    if worker.status and worker.status.gpu_devices:
+        total_gpu_util = 0.0
+        total_vram_util = 0.0
+        valid_gpu_count = 0
+        valid_vram_count = 0
+
+        for gpu in worker.status.gpu_devices:
+            if gpu.core and gpu.core.utilization_rate is not None:
+                total_gpu_util += gpu.core.utilization_rate
+                valid_gpu_count += 1
+            if gpu.memory and gpu.memory.utilization_rate is not None:
+                total_vram_util += gpu.memory.utilization_rate
+                valid_vram_count += 1
+
+        if valid_gpu_count > 0:
+            current_gpu = total_gpu_util / valid_gpu_count
+        if valid_vram_count > 0:
+            current_vram = total_vram_util / valid_vram_count
+
+    # Get historical data from worker_loads table
+    now = datetime.now(timezone.utc)
+    one_hour_ago = int((now - timedelta(hours=1)).timestamp())
+
+    statement = select(WorkerLoad)
+    statement = statement.where(WorkerLoad.worker_id == worker_id)
+    statement = statement.where(WorkerLoad.timestamp >= one_hour_ago)
+    statement = statement.order_by(WorkerLoad.timestamp.asc())
+
+    worker_loads = (await session.exec(statement)).all()
+
+    # Prepare time series data
+    cpu_history = []
+    ram_history = []
+    gpu_history = []
+    vram_history = []
+
+    for load in worker_loads:
+        cpu_history.append(
+            TimeSeriesData(timestamp=load.timestamp, value=load.cpu or 0)
+        )
+        ram_history.append(
+            TimeSeriesData(timestamp=load.timestamp, value=load.ram or 0)
+        )
+        gpu_history.append(
+            TimeSeriesData(timestamp=load.timestamp, value=load.gpu or 0)
+        )
+        vram_history.append(
+            TimeSeriesData(timestamp=load.timestamp, value=load.vram or 0)
+        )
+
+    # Create response
+    return WorkerLoadSummary(
+        current=CurrentWorkerLoad(
+            cpu=current_cpu,
+            ram=current_ram,
+            gpu=current_gpu,
+            vram=current_vram,
+        ),
+        history=HistoryWorkerLoad(
+            cpu=cpu_history,
+            ram=ram_history,
+            gpu=gpu_history,
+            vram=vram_history,
+        ),
+    )
+
+
+@router.get("/gpu-load/{gpu_id}")
+async def gpu_load(
+    session: SessionDep,
+    gpu_id: str,
+):
+    """
+    Get GPU usage trends.
+    This endpoint returns the current and historical usage data for a specific GPU.
+    """
+    # Get current GPU status from worker
+    # First, we need to find the worker and GPU index from gpu_id
+    # gpu_id format: worker_name:gpu_type:gpu_index
+    parts = gpu_id.split(":")
+    if len(parts) < 3:
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=400, detail="Invalid GPU ID format")
+
+    worker_name = parts[0]
+    gpu_index = int(parts[2])
+
+    # Find the worker
+    workers = await Worker.all_by_field(session, field="name", value=worker_name)
+    if not workers:
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=404, detail="Worker not found")
+
+    worker = workers[0]
+    current_gpu_util = 0
+    current_vram_util = 0
+
+    # Find the GPU device
+    if (
+        worker.status
+        and worker.status.gpu_devices
+        and len(worker.status.gpu_devices) > gpu_index
+    ):
+        gpu = worker.status.gpu_devices[gpu_index]
+        current_gpu_util = gpu.core.utilization_rate if gpu.core else 0
+        current_vram_util = gpu.memory.utilization_rate if gpu.memory else 0
+
+    # Get historical data from gpu_loads table
+    now = datetime.now(timezone.utc)
+    one_hour_ago = int((now - timedelta(hours=1)).timestamp())
+
+    statement = select(GPULoad)
+    statement = statement.where(GPULoad.gpu_id == gpu_id)
+    statement = statement.where(GPULoad.timestamp >= one_hour_ago)
+    statement = statement.order_by(GPULoad.timestamp.asc())
+
+    gpu_loads = (await session.exec(statement)).all()
+
+    # Prepare time series data
+    gpu_history = []
+    vram_history = []
+
+    for load in gpu_loads:
+        gpu_history.append(
+            TimeSeriesData(timestamp=load.timestamp, value=load.gpu_utilization or 0)
+        )
+        vram_history.append(
+            TimeSeriesData(timestamp=load.timestamp, value=load.vram_utilization or 0)
+        )
+
+    # Create response
+    return GPULoadSummary(
+        current=CurrentGPULoad(
+            gpu=current_gpu_util,
+            vram=current_vram_util,
+        ),
+        history=HistoryGPULoad(
+            gpu=gpu_history,
+            vram=vram_history,
+        ),
     )

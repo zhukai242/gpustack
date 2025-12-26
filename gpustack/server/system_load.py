@@ -140,8 +140,26 @@ class SystemLoadCollector:
                 async with AsyncSession(self._engine) as session:
                     workers = await Worker.all(session=session)
                     system_loads = compute_system_load(workers)
-                    for system_load in system_loads:
-                        await SystemLoad.create(session, system_load, auto_commit=False)
+
+                    # Collect and save worker loads
+                    from gpustack.server.system_load_collector_helper import (
+                        collect_worker_loads,
+                        collect_worker_logs,
+                        save_system_loads,
+                    )
+
+                    worker_loads, gpu_loads = await collect_worker_loads(workers)
+                    worker_logs, gpu_logs = await collect_worker_logs(workers)
+
+                    await save_system_loads(
+                        session,
+                        system_loads,
+                        worker_loads,
+                        gpu_loads,
+                        worker_logs,
+                        gpu_logs,
+                    )
+
                     await session.commit()
             except Exception as e:
                 logger.error(f"Failed to collect system load: {e}")

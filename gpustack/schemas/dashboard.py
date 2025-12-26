@@ -67,6 +67,40 @@ class ResourceCounts(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
 
 
+class CurrentWorkerLoad(BaseModel):
+    cpu: float
+    ram: float
+    gpu: float
+    vram: float
+
+
+class HistoryWorkerLoad(BaseModel):
+    cpu: List[TimeSeriesData]
+    ram: List[TimeSeriesData]
+    gpu: List[TimeSeriesData]
+    vram: List[TimeSeriesData]
+
+
+class WorkerLoadSummary(BaseModel):
+    current: CurrentWorkerLoad
+    history: HistoryWorkerLoad
+
+
+class CurrentGPULoad(BaseModel):
+    gpu: float
+    vram: float
+
+
+class HistoryGPULoad(BaseModel):
+    gpu: List[TimeSeriesData]
+    vram: List[TimeSeriesData]
+
+
+class GPULoadSummary(BaseModel):
+    current: CurrentGPULoad
+    history: HistoryGPULoad
+
+
 class SystemSummary(BaseModel):
     cluster_id: Optional[int] = None
     resource_counts: ResourceCounts
