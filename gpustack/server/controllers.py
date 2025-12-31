@@ -101,7 +101,7 @@ class ModelController:
             self._higress_network_api = NetworkingHigressIoV1Api(base_client)
             self._networking_api = k8s_client.NetworkingV1Api(api_client=base_client)
 
-        async for event in Model.subscribe(self._engine):
+        async for event in Model.subscribe(self._engine, source="model_controller"):
             if event.type == EventType.HEARTBEAT:
                 continue
 
@@ -148,7 +148,9 @@ class ModelInstanceController:
             base_client = k8s_client.ApiClient(configuration=self._k8s_config)
             self._higress_network_api = NetworkingHigressIoV1Api(base_client)
 
-        async for event in ModelInstance.subscribe(self._engine):
+        async for event in ModelInstance.subscribe(
+            self._engine, source="model_instance_controller"
+        ):
             if event.type == EventType.HEARTBEAT:
                 continue
 
@@ -166,24 +168,30 @@ class ModelInstanceController:
                 if not model:
                     return
 
-                if event.type == EventType.DELETED:
-                    await sync_replicas(session, model, self._config)
+                if not self._disable_gateway:
+                    await mcp_handler.ensure_model_instance_mcp_bridge(
+                        event_type=event.type,
+                        model_instance=model_instance,
+                        networking_higress_api=self._higress_network_api,
+                        namespace=self._config.gateway_namespace,
+                        cluster_id=model.cluster_id,
+                    )
 
-                if model_instance.state == ModelInstanceStateEnum.INITIALIZING:
+                if event.type == EventType.DELETED:
+                    # trigger model replica sync
+                    copied_model = Model.model_validate(model.model_dump())
+                    asyncio.create_task(
+                        event_bus.publish(
+                            Model.__name__.lower(),
+                            Event(type=EventType.UPDATED, data=copied_model),
+                        )
+                    )
+                elif model_instance.state == ModelInstanceStateEnum.INITIALIZING:
                     await ensure_instance_model_file(session, model_instance)
+                    return
 
                 await model.refresh(session)
                 await sync_ready_replicas(session, model)
-                if self._disable_gateway:
-                    return
-                await mcp_handler.ensure_model_instance_mcp_bridge(
-                    event_type=event.type,
-                    model_instance=model_instance,
-                    networking_higress_api=self._higress_network_api,
-                    namespace=self._config.gateway_namespace,
-                    cluster_id=model.cluster_id,
-                )
-
         except Exception as e:
             logger.error(
                 f"Failed to reconcile model instance {model_instance.name}: {e}"
@@ -291,6 +299,10 @@ async def sync_replicas(session: AsyncSession, model: Model, cfg: Config):
             logger.debug(f"Created model instance for model {model.name}")
 
     elif len(instances) > model.replicas:
+        # Get instances for update lock, to avoid race condition with scheduler
+        instances = await ModelInstance.all_by_field(
+            session, "model_id", model.id, for_update=True
+        )
         candidates = await find_scale_down_candidates(instances, model)
 
         scale_down_count = len(candidates) - model.replicas
@@ -685,7 +697,7 @@ class WorkerController:
         Start the controller.
         """
 
-        async for event in Worker.subscribe(self._engine):
+        async for event in Worker.subscribe(self._engine, source="worker_controller"):
             if event.type == EventType.HEARTBEAT:
                 continue
             try:
@@ -872,7 +884,9 @@ class ModelFileController:
         Start the controller.
         """
 
-        async for event in ModelFile.subscribe(self._engine):
+        async for event in ModelFile.subscribe(
+            self._engine, source="model_file_controller"
+        ):
             if event.type == EventType.CREATED or event.type == EventType.UPDATED:
                 await self._reconcile(event)
 
@@ -1170,7 +1184,9 @@ class WorkerPoolController:
         pass
 
     async def start(self):
-        async for event in WorkerPool.subscribe(self._engine):
+        async for event in WorkerPool.subscribe(
+            self._engine, source="worker_pool_controller"
+        ):
             if event.type == EventType.HEARTBEAT:
                 continue
             try:
@@ -1498,7 +1514,7 @@ class ClusterController:
             base_client = k8s_client.ApiClient(configuration=self._k8s_config)
             self._higress_network_api = NetworkingHigressIoV1Api(base_client)
 
-        async for event in Cluster.subscribe(self._engine):
+        async for event in Cluster.subscribe(self._engine, source="cluster_controller"):
             if event.type == EventType.HEARTBEAT:
                 continue
             try:

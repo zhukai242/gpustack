@@ -142,12 +142,17 @@ class ActiveRecordMixin:
         return result.first()
 
     @classmethod
-    async def all_by_field(cls, session: AsyncSession, field: str, value: Any):
+    async def all_by_field(
+        cls, session: AsyncSession, field: str, value: Any, for_update: bool = False
+    ):
         """
         Return all objects with the given field and value.
         Return an empty list if not found.
         """
         statement = select(cls).where(getattr(cls, field) == value)
+        if for_update:
+            statement = statement.with_for_update()
+
         result = await session.exec(statement)
         return result.all()
 
@@ -623,8 +628,17 @@ class ActiveRecordMixin:
         )
 
     @classmethod
-    async def subscribe(cls, engine: AsyncEngine) -> AsyncGenerator[Event, None]:
+    async def subscribe(
+        cls, engine: AsyncEngine, source: str
+    ) -> AsyncGenerator[Event, None]:
+        topic = cls.__name__.lower()
         subscriber = event_bus.subscribe(cls.__name__.lower())
+        logger.info(
+            "subscribed, source=%s topic=%s subscriber=%s",
+            source,
+            topic,
+            id(subscriber),
+        )
         async with AsyncSession(engine) as session:
             items = await cls.all(session)
             for item in items:
@@ -660,7 +674,7 @@ class ActiveRecordMixin:
     ) -> AsyncGenerator[str, None]:
         """Stream events matching the given criteria as JSON strings."""
         try:
-            async for event in cls.subscribe(engine):
+            async for event in cls.subscribe(engine, source="streaming"):
                 if event.type == EventType.HEARTBEAT:
                     yield "\n\n"
                     continue
