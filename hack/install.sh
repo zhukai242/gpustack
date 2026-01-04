@@ -13,7 +13,7 @@ source "${ROOT_DIR}/hack/lib/init.sh"
 
 function download_deps() {
   if ! command -v uv &> /dev/null; then
-    pip install uv
+    pip3 install uv
   fi
   # uv sync --all-extras to install all dependencies
   uv sync
