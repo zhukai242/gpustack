@@ -555,6 +555,37 @@ class ActiveRecordMixin:
     async def delete(self, session: AsyncSession, soft=False, auto_commit=True):
         """Delete the object from the database."""
         self._publish_event_after_commit(session, EventType.DELETED, self)
+        # 删除对应的worker_load gpu_load 和 worker_logs gpu_logs
+        if not soft:
+            # 如果是Worker模型，删除对应的负载和日志记录
+            if (
+                hasattr(self, 'id')
+                and hasattr(self, 'name')
+                and 'Worker' in self.__class__.__name__
+            ):
+                # 删除worker_loads记录
+                await session.exec(
+                    text("DELETE FROM worker_loads WHERE worker_id = :worker_id"),
+                    params={'worker_id': self.id},
+                )
+
+                # 删除gpu_loads记录
+                await session.exec(
+                    text("DELETE FROM gpu_loads WHERE worker_id = :worker_id"),
+                    params={'worker_id': self.id},
+                )
+
+                # 删除worker_logs记录
+                await session.exec(
+                    text("DELETE FROM worker_logs WHERE worker_id = :worker_id"),
+                    params={'worker_id': self.id},
+                )
+
+                # 删除gpu_logs记录
+                await session.exec(
+                    text("DELETE FROM gpu_logs WHERE worker_id = :worker_id"),
+                    params={'worker_id': self.id},
+                )
 
         if soft or self._has_cascade_delete():
             if hasattr(self, "deleted_at"):
