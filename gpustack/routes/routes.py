@@ -8,6 +8,7 @@ from gpustack.routes import (
     debug,
     draft_models,
     gpu_devices,
+    gpus,
     inference_backend,
     logs,
     metrics,
@@ -121,6 +122,7 @@ worker_client_router.include_router(
 admin_routers = model_routers + [
     {"router": dashboard.router, "prefix": "/dashboard", "tags": ["Dashboard"]},
     {"router": workers.router, "prefix": "/workers", "tags": ["Workers"]},
+    {"router": gpus.router, "prefix": "/gpus", "tags": ["GPUs"]},
     {"router": users.router, "prefix": "/users", "tags": ["Users"]},
     {"router": model_sets.router, "prefix": "/model-sets", "tags": ["Model Sets"]},
     {
