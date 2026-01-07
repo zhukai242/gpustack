@@ -17,6 +17,7 @@ from gpustack.routes import (
     model_sets,
     probes,
     proxy,
+    racks,
     update,
     users,
     models,
@@ -146,6 +147,7 @@ admin_routers = model_routers + [
         "tags": ["Worker Pools"],
     },
     {"router": clusters.router, "prefix": "/clusters", "tags": ["Clusters"]},
+    {"router": racks.router, "prefix": "/racks", "tags": ["Racks"]},
 ]
 
 v1_admin_router = APIRouter()

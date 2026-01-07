@@ -228,8 +228,8 @@ class SystemLoadCollector:
             if worker.state.is_provisioning:
                 continue
             # Collect GPU loads if available
-            if worker.status and worker.status.gpu_devices:
-                for gpu_index, gpu in enumerate(worker.status.gpu_devices):
+            if worker.status:
+                for gpu_index, gpu in enumerate(worker.status.gpu_devices or []):
                     # Create individual GPU load record
                     gpu_util = (
                         gpu.core.utilization_rate
@@ -264,7 +264,7 @@ class SystemLoadCollector:
                 continue
 
             # Collect worker logs if available
-            if hasattr(worker.status, 'log') and worker.status.log:
+            if worker.status and hasattr(worker.status, 'log') and worker.status.log:
                 for log_entry in worker.status.log:
                     worker_log = WorkerLogCreate(
                         worker_id=worker.id,
@@ -290,7 +290,6 @@ class SystemLoadCollector:
                         ),
                     )
                     worker_logs.append(worker_log)
-
         return worker_logs
 
     async def _collect_gpu_logs(self, workers):
@@ -301,8 +300,8 @@ class SystemLoadCollector:
                 continue
 
             # Collect GPU logs if available
-            if worker.status and worker.status.gpu_devices:
-                for gpu_index, gpu in enumerate(worker.status.gpu_devices):
+            if worker.status:
+                for gpu_index, gpu in enumerate(worker.status.gpu_devices or []):
                     # Collect GPU logs if available
                     if hasattr(gpu, 'log') and gpu.log:
                         # Generate GPU ID for log
@@ -336,7 +335,6 @@ class SystemLoadCollector:
                                 ),
                             )
                             gpu_logs.append(gpu_log)
-
         return gpu_logs
 
     async def _save_system_loads(self, session, system_loads):

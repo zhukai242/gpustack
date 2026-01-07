@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from enum import Enum
-from typing import ClassVar, Dict, Optional, Any
+from typing import ClassVar, Dict, Optional, Any, TYPE_CHECKING
 from pydantic import ConfigDict, BaseModel
 from sqlmodel import (
     Field,
@@ -30,6 +30,9 @@ from gpustack.schemas.config import (
     PredefinedConfigNoDefaults,
     ModelInstanceProxyModeEnum,
 )
+
+if TYPE_CHECKING:
+    from .rack import Rack
 
 Base = declarative_base()
 
@@ -389,6 +392,12 @@ class WorkerBase(WorkerCreate):
         default=None,
         sa_column=Column(Integer, ForeignKey("worker_pools.id"), nullable=True),
     )  # The worker pool this worker belongs to
+    rack_id: Optional[int] = Field(
+        default=None,
+        sa_column=Column(
+            Integer, ForeignKey("racks.id", ondelete="SET NULL"), nullable=True
+        ),
+    )  # The rack this worker belongs to
 
     # Not setting foreign key to manage lifecycle
     ssh_key_id: Optional[int] = Field(
@@ -408,6 +417,9 @@ class Worker(WorkerBase, BaseModelMixin, table=True):
     )
     worker_pool: Optional[WorkerPool] = Relationship(
         back_populates="pool_workers", sa_relationship_kwargs={"lazy": "selectin"}
+    )
+    rack: Optional["Rack"] = Relationship(
+        back_populates="rack_workers", sa_relationship_kwargs={"lazy": "selectin"}
     )
 
     # This field should be replaced by x509 credential if mTLS is supported.
