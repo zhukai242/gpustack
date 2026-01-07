@@ -16,7 +16,7 @@ import gpustack.utils.sql_enum as sql_enum
 
 # revision identifiers, used by Alembic.
 revision: str = '53667f33f000'
-down_revision: Union[str, None] = '2aed534bd7b2'
+down_revision: Union[str, None] = '2025_12_25_0002'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

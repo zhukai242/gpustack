@@ -908,3 +908,45 @@ model_sets:
       backend_version: 0.5.6.post2
       env:
         GPUSTACK_MODEL_VRAM_CLAIM: "35433480192" # 33 GiB, observed empirically
+
+- name: Qwen3-8B-Local
+  description: Qwen3 is a family of large language models in Qwen series, offering a comprehensive suite of dense and mixture-of-experts (MoE) models. Built upon extensive training, Qwen3 delivers groundbreaking advancements in reasoning, instruction-following, agent capabilities, and multilingual support.
+  home: https://qwenlm.github.io
+  icon: /static/catalog_icons/qwen.png
+  size: 8
+  categories:
+    - llm
+  capabilities:
+    - context/128K
+    - tools
+  licenses:
+    - apache-2.0
+  release_date: "2025-04-19"
+  specs:
+    # Ascend NPUs
+    - mode: throughput
+      quantization: BF16
+      gpu_filters:
+        vendor: ascend
+      source: local_path
+      local_path: /Volumes/nfs/models/HuggingFace/Qwen/Qwen3-8B
+      backend: MindIE
+      backend_parameters:
+        - --max-seq-len=32768
+    # Other GPUs
+    - mode: throughput
+      quantization: FP8
+      source: local_path
+      local_path: /Volumes/nfs/models/HuggingFace/Qwen/Qwen3-8B
+      backend: MindIE
+      backend_parameters:
+        - --reasoning-parser=deepseek_r1
+        - --max-model-len=32768
+    - mode: standard
+      quantization: BF16
+      source: local_path
+      local_path: /Volumes/nfs/models/HuggingFace/Qwen/Qwen3-8B
+      backend: MindIE
+      backend_parameters:
+        - --reasoning-parser=deepseek_r1
+        - --max-model-len=32768

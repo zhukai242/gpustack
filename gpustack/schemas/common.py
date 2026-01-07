@@ -179,11 +179,7 @@ def pydantic_column_type(
             return x == y
 
         def _prepare_value_for_dump(self, value):
-            # Handle nested Pydantic models
-            if isinstance(value, dict):
-                return pydantic_type.model_validate(value)
-            # If it's already a Pydantic model, use it directly
-            return value
+            return pydantic_type.model_validate(value)
 
         def __repr__(self):
             return "JSON()"

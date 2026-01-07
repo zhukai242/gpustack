@@ -5,7 +5,19 @@ from typing import Tuple, Dict, List
 from sqlmodel.ext.asyncio.session import AsyncSession
 from gpustack.schemas.workers import Worker
 from gpustack.schemas.system_load import SystemLoad
+from gpustack.schemas.load import (
+    WorkerLoadCreate,
+    GPULoadCreate,
+    WorkerLogCreate,
+    GPULogCreate,
+)
 from gpustack.server.db import get_engine
+from gpustack.server.load_services import (
+    WorkerLoadService,
+    GPULoadService,
+    WorkerLogService,
+    GPULogService,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -139,27 +151,219 @@ class SystemLoadCollector:
             try:
                 async with AsyncSession(self._engine) as session:
                     workers = await Worker.all(session=session)
+
+                    # Collect system load information
                     system_loads = compute_system_load(workers)
-
-                    # Collect and save worker loads
-                    from gpustack.server.system_load_collector_helper import (
-                        collect_worker_loads,
-                        collect_worker_logs,
-                        save_system_loads,
-                    )
-
-                    worker_loads, gpu_loads = await collect_worker_loads(workers)
-                    worker_logs, gpu_logs = await collect_worker_logs(workers)
-
-                    await save_system_loads(
-                        session,
-                        system_loads,
-                        worker_loads,
-                        gpu_loads,
-                        worker_logs,
-                        gpu_logs,
-                    )
-
+                    # Collect worker loads and logs
+                    worker_loads = await self._collect_worker_loads(workers)
+                    gpu_loads = await self._collect_gpu_loads(workers)
+                    worker_logs = await self._collect_worker_logs(workers)
+                    gpu_logs = await self._collect_gpu_logs(workers)
+                    # Save all loads and logs to database
+                    await self._save_system_loads(session, system_loads)
+                    await self._save_worker_loads(session, worker_loads)
+                    await self._save_gpu_loads(session, gpu_loads)
+                    await self._save_worker_logs(session, worker_logs)
+                    await self._save_gpu_logs(session, gpu_logs)
                     await session.commit()
             except Exception as e:
                 logger.error(f"Failed to collect system load: {e}")
+
+    async def _collect_worker_loads(self, workers):
+        """Collect worker loads from workers."""
+        worker_loads = []
+        for worker in workers:
+            if worker.state.is_provisioning:
+                continue
+            # Create worker load record
+            worker_load = WorkerLoadCreate(
+                worker_id=worker.id,
+                cpu=_safe_cpu_rate(worker),
+                ram=_safe_memory_rate(worker),
+                # For worker-level GPU/VRAM, we'll calculate the average
+                gpu=None,
+                vram=None,
+            )
+            worker_loads.append(worker_load)
+
+            # Calculate average GPU/VRAM for this worker
+            if worker.status and worker.status.gpu_devices:
+                total_gpu_util = 0.0
+                total_vram_util = 0.0
+                valid_gpu_count = 0
+                valid_vram_count = 0
+
+                for _gpu_index, gpu in enumerate(worker.status.gpu_devices):
+                    gpu_util = (
+                        gpu.core.utilization_rate
+                        if gpu.core and gpu.core.utilization_rate is not None
+                        else None
+                    )
+                    vram_util = (
+                        gpu.memory.utilization_rate
+                        if gpu.memory and gpu.memory.utilization_rate is not None
+                        else None
+                    )
+
+                    # Accumulate for worker-level average
+                    if gpu_util is not None:
+                        total_gpu_util += gpu_util
+                        valid_gpu_count += 1
+                    if vram_util is not None:
+                        total_vram_util += vram_util
+                        valid_vram_count += 1
+
+                # Update worker load with average GPU/VRAM
+                if valid_gpu_count > 0:
+                    worker_load.gpu = total_gpu_util / valid_gpu_count
+                if valid_vram_count > 0:
+                    worker_load.vram = total_vram_util / valid_vram_count
+
+        return worker_loads
+
+    async def _collect_gpu_loads(self, workers):
+        """Collect GPU loads from workers."""
+        gpu_loads = []
+        for worker in workers:
+            if worker.state.is_provisioning:
+                continue
+            # Collect GPU loads if available
+            if worker.status and worker.status.gpu_devices:
+                for gpu_index, gpu in enumerate(worker.status.gpu_devices):
+                    # Create individual GPU load record
+                    gpu_util = (
+                        gpu.core.utilization_rate
+                        if gpu.core and gpu.core.utilization_rate is not None
+                        else None
+                    )
+                    vram_util = (
+                        gpu.memory.utilization_rate
+                        if gpu.memory and gpu.memory.utilization_rate is not None
+                        else None
+                    )
+
+                    # Generate GPU ID in format: worker_name:gpu_type:gpu_index
+                    gpu_type = gpu.type if gpu.type else "unknown"
+                    gpu_id = f"{worker.name}:{gpu_type}:{gpu_index}"
+
+                    gpu_load = GPULoadCreate(
+                        worker_id=worker.id,
+                        gpu_index=gpu_index,
+                        gpu_id=gpu_id,
+                        gpu_utilization=gpu_util,
+                        vram_utilization=vram_util,
+                    )
+                    gpu_loads.append(gpu_load)
+        return gpu_loads
+
+    async def _collect_worker_logs(self, workers):
+        """Collect worker logs from workers."""
+        worker_logs = []
+        for worker in workers:
+            if worker.state.is_provisioning:
+                continue
+
+            # Collect worker logs if available
+            if hasattr(worker.status, 'log') and worker.status.log:
+                for log_entry in worker.status.log:
+                    worker_log = WorkerLogCreate(
+                        worker_id=worker.id,
+                        log_type=(
+                            log_entry.get('type')
+                            if isinstance(log_entry, dict)
+                            else 'unknown'
+                        ),
+                        log_content=(
+                            log_entry.get('content')
+                            if isinstance(log_entry, dict)
+                            else str(log_entry)
+                        ),
+                        severity=(
+                            log_entry.get('severity')
+                            if isinstance(log_entry, dict)
+                            else 'info'
+                        ),
+                        status=(
+                            log_entry.get('status')
+                            if isinstance(log_entry, dict)
+                            else 'unknown'
+                        ),
+                    )
+                    worker_logs.append(worker_log)
+
+        return worker_logs
+
+    async def _collect_gpu_logs(self, workers):
+        """Collect GPU logs from workers."""
+        gpu_logs = []
+        for worker in workers:
+            if worker.state.is_provisioning:
+                continue
+
+            # Collect GPU logs if available
+            if worker.status and worker.status.gpu_devices:
+                for gpu_index, gpu in enumerate(worker.status.gpu_devices):
+                    # Collect GPU logs if available
+                    if hasattr(gpu, 'log') and gpu.log:
+                        # Generate GPU ID for log
+                        gpu_type = gpu.type if gpu.type else "unknown"
+                        gpu_id = f"{worker.name}:{gpu_type}:{gpu_index}"
+
+                        for log_entry in gpu.log:
+                            gpu_log = GPULogCreate(
+                                worker_id=worker.id,
+                                gpu_index=gpu_index,
+                                gpu_id=gpu_id,
+                                log_type=(
+                                    log_entry.get('type')
+                                    if isinstance(log_entry, dict)
+                                    else 'unknown'
+                                ),
+                                log_content=(
+                                    log_entry.get('content')
+                                    if isinstance(log_entry, dict)
+                                    else str(log_entry)
+                                ),
+                                severity=(
+                                    log_entry.get('severity')
+                                    if isinstance(log_entry, dict)
+                                    else 'info'
+                                ),
+                                status=(
+                                    log_entry.get('status')
+                                    if isinstance(log_entry, dict)
+                                    else 'unknown'
+                                ),
+                            )
+                            gpu_logs.append(gpu_log)
+
+        return gpu_logs
+
+    async def _save_system_loads(self, session, system_loads):
+        """Save system loads to database."""
+        for system_load in system_loads:
+            await SystemLoad.create(session, system_load, auto_commit=False)
+
+    async def _save_worker_loads(self, session, worker_loads):
+        """Save worker loads to database."""
+        if worker_loads:
+            worker_load_service = WorkerLoadService(session)
+            await worker_load_service.create_many(worker_loads)
+
+    async def _save_gpu_loads(self, session, gpu_loads):
+        """Save GPU loads to database."""
+        if gpu_loads:
+            gpu_load_service = GPULoadService(session)
+            await gpu_load_service.create_many(gpu_loads)
+
+    async def _save_worker_logs(self, session, worker_logs):
+        """Save worker logs to database."""
+        if worker_logs:
+            worker_log_service = WorkerLogService(session)
+            await worker_log_service.create_many(worker_logs)
+
+    async def _save_gpu_logs(self, session, gpu_logs):
+        """Save GPU logs to database."""
+        if gpu_logs:
+            gpu_log_service = GPULogService(session)
+            await gpu_log_service.create_many(gpu_logs)
