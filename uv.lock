@@ -1889,6 +1889,7 @@ dependencies = [
     { name = "asyncpg" },
     { name = "attrs" },
     { name = "blobfile" },
+    { name = "cachetools" },
     { name = "colorama" },
     { name = "cryptography" },
     { name = "dataclasses-json" },
@@ -1994,13 +1995,14 @@ requires-dist = [
     { name = "bitsandbytes", marker = "extra == 'all'", specifier = ">=0.45.2" },
     { name = "bitsandbytes", marker = "extra == 'vllm'", specifier = ">=0.45.2" },
     { name = "blobfile", specifier = ">=3.0.0" },
+    { name = "cachetools", specifier = ">=6.0.0" },
     { name = "colorama", specifier = ">=0.4.6" },
     { name = "cryptography", specifier = ">=43.0.0" },
     { name = "dataclasses-json", specifier = ">=0.6.7" },
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "fastapi-cdn-host", specifier = ">=0.8.0" },
-    { name = "gpustack-runner", specifier = ">=0.1.23.post4" },
-    { name = "gpustack-runtime", specifier = "==0.1.39.post2" },
+    { name = "gpustack-runner", specifier = ">=0.1.23.post5" },
+    { name = "gpustack-runtime", specifier = "==0.1.39.post3" },
     { name = "hf-transfer", specifier = ">=0.1.9" },
     { name = "httpx", extras = ["socks"], specifier = ">=0.27.0" },
     { name = "huggingface-hub", specifier = ">=0.32.0" },
@@ -2076,35 +2078,36 @@ dev = [
 
 [[package]]
 name = "gpustack-runner"
-version = "0.1.23.post4"
+version = "0.1.23.post5"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "argcomplete" },
     { name = "dataclasses-json" },
     { name = "requests" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e9/22/15ae68383ed311a1cfc795b35462d9dbcd09c9f9d69eb9e877c8cc031e1a/gpustack_runner-0.1.23.post4.tar.gz", hash = "sha256:79b49dbdfe3561ee305b904e28c19ce97cb618ed904915470044209a6c7103cb", size = 118216, upload-time = "2026-01-04T08:06:26.804Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ed/18/361438a2f05a9d9ae4a995c868aa5d6c8188549ff2c8570aa1d8dd8a6b58/gpustack_runner-0.1.23.post5.tar.gz", hash = "sha256:9f5f76a19fc59b8f34391795f9cbeba2583182e5a8a250283217c44a03bb96bb", size = 121085, upload-time = "2026-01-08T04:19:27.376Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/01/5f/61453bbee9d6e46241b1dee426ab257f87060faad4b6366ab6e97c42abe4/gpustack_runner-0.1.23.post4-py3-none-any.whl", hash = "sha256:864fac24a2945c7b34079715eccff32341b796fa4f409e66103afc81c0117326", size = 25603, upload-time = "2026-01-04T08:06:25.641Z" },
+    { url = "https://files.pythonhosted.org/packages/51/da/2919437d9841117fcb8d19fa6cbf77d53870153e4227516d046d7522fe5e/gpustack_runner-0.1.23.post5-py3-none-any.whl", hash = "sha256:34220a6cdd813bf8617b11b72ad857f69196541ecb11042617a24bfc4c32fe17", size = 25775, upload-time = "2026-01-08T04:19:24.912Z" },
 ]
 
 [[package]]
 name = "gpustack-runtime"
-version = "0.1.39.post2"
+version = "0.1.39.post3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "argcomplete" },
     { name = "docker" },
     { name = "gpustack-runner" },
     { name = "kubernetes" },
+    { name = "mthreads-ml-py" },
     { name = "nvidia-ml-py" },
     { name = "podman" },
     { name = "pyyaml" },
     { name = "tqdm" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/be/af/a57d09960900df67cec50bbe4aaa72bad2b5c71f873a247b43adef04bc4b/gpustack_runtime-0.1.39.post2.tar.gz", hash = "sha256:9fc96f97389281cf345c4e6fd309dcad874b36c8d86b9e2dd07608298a2bc269", size = 240104, upload-time = "2026-01-04T12:53:34.948Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/1b/71/459f80990effbe7be4a43e10dc9ccdbf4865714168eaf408ec3f5b3d5280/gpustack_runtime-0.1.39.post3.tar.gz", hash = "sha256:310e5b4713ab86087ae81c1a203a54378cf6d6a4eb8f5ff4e36d26501fd68190", size = 236676, upload-time = "2026-01-08T04:28:46.079Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/06/74/db24621d58fc109627047368a680d829991a68dde7ce53a13c5eb9e7e5a1/gpustack_runtime-0.1.39.post2-py3-none-any.whl", hash = "sha256:e4f90155d35b03bb02cf93fe85259c47d62655a724c61e47a454fec25d08f171", size = 213523, upload-time = "2026-01-04T12:53:33.799Z" },
+    { url = "https://files.pythonhosted.org/packages/bb/2a/bc07a8c370734a136be4b7240bd6b0904d40ddbd4c82947802558c6b8897/gpustack_runtime-0.1.39.post3-py3-none-any.whl", hash = "sha256:2bb655c6ca0ec9b72c155b0ac4fca73a6235185bca3fa51e876ee37b701df613", size = 209041, upload-time = "2026-01-08T04:28:44.667Z" },
 ]
 
 [[package]]
@@ -3539,6 +3542,14 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/68/77/8397c8fb8fc257d8ea0fa66f8068e073278c65f05acb17dcb22a02bfdc42/msrest-0.7.1.zip", hash = "sha256:6e7661f46f3afd88b75667b7187a92829924446c7ea1d169be8c4bb7eeb788b9", size = 175332, upload-time = "2022-06-13T22:41:25.111Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/15/cf/f2966a2638144491f8696c27320d5219f48a072715075d168b31d3237720/msrest-0.7.1-py3-none-any.whl", hash = "sha256:21120a810e1233e5e6cc7fe40b474eeb4ec6f757a15d7cf86702c369f9567c32", size = 85384, upload-time = "2022-06-13T22:41:22.42Z" },
+]
+
+[[package]]
+name = "mthreads-ml-py"
+version = "2.2.10"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/58/39/406e8818b6fefb9ffa5ce3a3620cd8e9e17a7b05f49082d20d9c1613667a/mthreads_ml_py-2.2.10-py3-none-any.whl", hash = "sha256:aa9f801f147262ff43e3bd497c9753c7883f416105afb16aeb60cd4cfb06c972", size = 18296, upload-time = "2026-01-07T02:46:21.527Z" },
 ]
 
 [[package]]
