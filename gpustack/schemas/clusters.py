@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from gpustack.schemas.models import Model, ModelInstance
     from gpustack.schemas.workers import Worker
     from gpustack.schemas.users import User
+    from gpustack.schemas.licenses import License
 
 
 def is_in_session(obj: SQLModel, attr: Optional[str] = None) -> bool:
@@ -305,6 +306,10 @@ class Cluster(ClusterBase, BaseModelMixin, table=True):
     )
     cluster_workers: List["Worker"] = Relationship(
         sa_relationship_kwargs={"cascade": "delete", "lazy": "selectin"},
+        back_populates="cluster",
+    )
+    licenses: List["License"] = Relationship(
+        sa_relationship_kwargs={"lazy": "selectin"},
         back_populates="cluster",
     )
     _models: int = 0

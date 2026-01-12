@@ -33,6 +33,7 @@ from gpustack.schemas.config import (
 
 if TYPE_CHECKING:
     from .rack import Rack
+    from gpustack.schemas.licenses import LicenseActivation
 
 Base = declarative_base()
 
@@ -420,6 +421,9 @@ class Worker(WorkerBase, BaseModelMixin, table=True):
     )
     rack: Optional["Rack"] = Relationship(
         back_populates="rack_workers", sa_relationship_kwargs={"lazy": "selectin"}
+    )
+    license_activations: List["LicenseActivation"] = Relationship(
+        back_populates="worker", sa_relationship_kwargs={"lazy": "selectin"}
     )
 
     # This field should be replaced by x509 credential if mTLS is supported.

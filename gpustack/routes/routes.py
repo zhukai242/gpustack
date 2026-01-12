@@ -10,6 +10,7 @@ from gpustack.routes import (
     gpu_devices,
     gpus,
     inference_backend,
+    licenses,
     logs,
     metrics,
     model_evaluations,
@@ -19,6 +20,9 @@ from gpustack.routes import (
     probes,
     proxy,
     racks,
+    system_settings,
+    tenant_resources,
+    tenants,
     update,
     users,
     models,
@@ -137,6 +141,7 @@ admin_routers = model_routers + [
     },
     {"router": gpu_devices.router, "prefix": "/gpu-devices", "tags": ["GPU Devices"]},
     {"router": logs.router, "prefix": "/logs", "tags": ["Logs"]},
+    {"router": licenses.router},
     # following routers are introduced by gpustack v2.0
     {
         "router": cloud_credentials.router,
@@ -150,6 +155,13 @@ admin_routers = model_routers + [
     },
     {"router": clusters.router, "prefix": "/clusters", "tags": ["Clusters"]},
     {"router": racks.router, "prefix": "/racks", "tags": ["Racks"]},
+    {"router": system_settings.router},
+    {"router": tenants.router, "prefix": "/tenants", "tags": ["Tenants"]},
+    {
+        "router": tenant_resources.router,
+        "prefix": "/tenant-resources",
+        "tags": ["Tenant Resources"],
+    },
 ]
 
 v1_admin_router = APIRouter()
