@@ -50,6 +50,67 @@ def to_worker_public(input: Worker, me: bool) -> WorkerPublic:
     return WorkerPublic.model_validate(data)
 
 
+def calculate_gpu_activation_status(worker, worker_activations):
+    """
+    Calculate GPU activation status for a worker.
+
+    Args:
+        worker: The worker object
+        worker_activations: Dictionary mapping worker_id to list of activations
+
+    Returns:
+        Tuple containing GPU activation status information:
+        - total_gpu_count: Total number of GPUs
+        - activated_gpu_count: Number of activated GPUs
+        - activated_gpu_ids: List of activated GPU IDs
+        - unactivated_gpu_ids: List of unactivated GPU IDs
+        - gpu_activated: Whether all GPUs are activated
+    """
+    # Calculate total GPU count
+    gpu_devices = []
+    if worker.status and worker.status.gpu_devices:
+        gpu_devices = worker.status.gpu_devices
+    total_gpu_count = len(gpu_devices)
+
+    # Collect all GPU IDs from the worker
+    all_gpu_ids = []
+    gpu_sn_to_id = {}
+    for device in gpu_devices:
+        gpu_id = device.uuid if device.uuid else device.device_index
+        all_gpu_ids.append(gpu_id)
+        if device.uuid:
+            gpu_sn_to_id[device.uuid] = gpu_id
+
+    # Calculate activated GPU count and IDs
+    activated_gpus = worker_activations.get(worker.id, [])
+    activated_gpu_count = len(activated_gpus)
+
+    # Determine which GPUs are activated
+    activated_gpu_ids = []
+    for activation in activated_gpus:
+        # Try to match by GPU SN or GPU ID
+        if activation.gpu_sn in gpu_sn_to_id:
+            activated_gpu_ids.append(gpu_sn_to_id[activation.gpu_sn])
+        elif activation.gpu_id:
+            activated_gpu_ids.append(activation.gpu_id)
+
+    # Determine which GPUs are not activated
+    unactivated_gpu_ids = [
+        gpu_id for gpu_id in all_gpu_ids if gpu_id not in activated_gpu_ids
+    ]
+
+    # Determine if all GPUs are activated
+    gpu_activated = total_gpu_count > 0 and activated_gpu_count == total_gpu_count
+
+    return (
+        total_gpu_count,
+        activated_gpu_count,
+        activated_gpu_ids,
+        unactivated_gpu_ids,
+        gpu_activated,
+    )
+
+
 @router.get("", response_model=WorkersPublic)
 async def get_workers(
     user: CurrentUserDep,
@@ -103,11 +164,56 @@ async def get_workers(
         per_page=params.perPage,
         order_by=order_by,
     )
-    if not user.worker:
-        return worker_list
+
+    # Query license activations for all workers
+    worker_ids = [worker.id for worker in worker_list.items]
+    from gpustack.schemas.licenses import LicenseActivation
+    from sqlalchemy import select, cast, String
+
+    # Use explicit cast to String to avoid enum type conversion issues
+    statement = select(LicenseActivation).where(
+        LicenseActivation.worker_id.in_(worker_ids),
+        cast(LicenseActivation.status, String) == "ACTIVE",
+    )
+    result = await session.execute(statement)
+    activations = result.scalars().all()
+
+    # Group activations by worker_id
+    worker_activations = {}
+    for activation in activations:
+        if activation.worker_id not in worker_activations:
+            worker_activations[activation.worker_id] = []
+        worker_activations[activation.worker_id].append(activation)
+
+    # For both cases, we need to create WorkerPublic objects with GPU activation info
     public_list = []
     for worker in worker_list.items:
-        public_list.append(to_worker_public(worker, user.worker.id == worker.id))
+        # Create WorkerPublic object regardless of user type
+        is_current_worker = user.worker.id == worker.id if user.worker else False
+        public_worker = to_worker_public(worker, is_current_worker)
+
+        (
+            total_gpu_count,
+            activated_gpu_count,
+            activated_gpu_ids,
+            unactivated_gpu_ids,
+            gpu_activated,
+        ) = calculate_gpu_activation_status(worker, worker_activations)
+
+        # Set GPU activation info only on WorkerPublic object
+        public_worker.total_gpu_count = total_gpu_count
+        public_worker.activated_gpu_count = activated_gpu_count
+        public_worker.activated_gpu_ids = activated_gpu_ids
+        public_worker.unactivated_gpu_ids = unactivated_gpu_ids
+        public_worker.gpu_activated = gpu_activated
+
+        public_list.append(public_worker)
+
+    # Return appropriate response based on user type
+    if not user.worker:
+        # For non-worker users, we still need to return WorkersPublic format
+        return WorkersPublic(items=public_list, pagination=worker_list.pagination)
+
     return WorkersPublic(items=public_list, pagination=worker_list.pagination)
 
 
@@ -132,15 +238,19 @@ def update_worker_data(
 ) -> Worker:
     to_create_worker = None
     if existing is not None:
+        # Get worker_in data and exclude rack_id to preserve existing value
+        worker_in_data = worker_in.model_dump()
+
         to_create_worker = Worker.model_validate(
             {
                 **existing.model_dump(),
-                **worker_in.model_dump(),
+                **worker_in_data,
                 "labels": {
                     **existing.labels,
                     **worker_in.labels,
                 },
                 "cluster_id": existing.cluster_id,
+                "rack_id": existing.rack_id,  # Preserve existing rack_id
                 "state": WorkerStateEnum.READY,
             }
         )

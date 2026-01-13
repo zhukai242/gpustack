@@ -334,6 +334,12 @@ class WorkerCreate(WorkerStatusStored, WorkerUpdate):
     external_id: Optional[str] = Field(
         default=None, sa_column=Column(String(255), nullable=True)
     )
+    rack_id: Optional[int] = Field(
+        default=None,
+        sa_column=Column(
+            Integer, ForeignKey("racks.id", ondelete="SET NULL"), nullable=True
+        ),
+    )
 
 
 class WorkerBase(WorkerCreate):
@@ -489,6 +495,21 @@ class WorkerPublic(
     updated_at: datetime
     me: Optional[bool] = None  # Indicates if the worker is the current worker
     provision_progress: Optional[str] = None  # Indicates the provisioning progress
+    gpu_activated: Optional[bool] = Field(
+        default=None, description="Indicates if all GPUs on this worker are activated"
+    )
+    activated_gpu_count: Optional[int] = Field(
+        default=0, description="Number of activated GPUs on this worker"
+    )
+    total_gpu_count: Optional[int] = Field(
+        default=0, description="Total number of GPUs on this worker"
+    )
+    activated_gpu_ids: Optional[list[str]] = Field(
+        default=[], description="List of activated GPU IDs on this worker"
+    )
+    unactivated_gpu_ids: Optional[list[str]] = Field(
+        default=[], description="List of unactivated GPU IDs on this worker"
+    )
 
     worker_uuid: Optional[str] = Field(default=None, exclude=True)
     machine_id: Optional[str] = Field(default=None, exclude=True)

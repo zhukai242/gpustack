@@ -3,6 +3,7 @@ from datetime import datetime
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
+from sqlmodel import select
 
 from gpustack.api.exceptions import (
     AlreadyExistsException,
@@ -24,6 +25,7 @@ from gpustack.schemas.tenants import (
     TenantResourceAdjustmentCreate,
 )
 from gpustack.schemas.workers import Worker
+from gpustack.schemas.licenses import LicenseActivation, LicenseStatusEnum
 from gpustack.server.tenant_services import (
     TenantService,
     TenantResourceService,
@@ -31,7 +33,6 @@ from gpustack.server.tenant_services import (
 )
 
 router = APIRouter()
-
 
 # ============ Models for Available Resources ============
 
@@ -146,6 +147,171 @@ class AvailableResourcesResponse(BaseModel):
 # ============ Tenant Routes ============
 
 
+async def _build_worker_filters(
+    cluster_id: Optional[int], rack_id: Optional[int]
+) -> dict:
+    """
+    Build worker query filters based on cluster_id and rack_id.
+    """
+    fields = {"deleted_at": None}
+    if cluster_id:
+        fields["cluster_id"] = cluster_id
+    if rack_id:
+        fields["rack_id"] = rack_id
+    return fields
+
+
+async def _build_allocated_gpu_map(
+    session: SessionDep,
+    resource_service: TenantResourceService,
+    tenant_service: TenantService,
+) -> dict:
+    """
+    Build a map of allocated GPU IDs to tenant info.
+    """
+    all_allocated_resources = await resource_service.get_active_resources()
+    allocated_gpu_map = {}  # gpu_id -> (tenant_id, tenant_name)
+
+    for resource in all_allocated_resources:
+        if resource.gpu_id:
+            tenant = await tenant_service.get_by_id(resource.tenant_id)
+            tenant_name = tenant.name if tenant else "Unknown"
+            allocated_gpu_map[resource.gpu_id] = (resource.tenant_id, tenant_name)
+
+    return allocated_gpu_map
+
+
+async def _build_activated_gpu_set(session: SessionDep) -> set:
+    """
+    Build a set of GPU IDs that are activated in license_activations.
+    """
+    active_activations = await session.exec(
+        select(LicenseActivation).where(
+            LicenseActivation.status == LicenseStatusEnum.ACTIVE
+        )
+    )
+
+    activated_gpu_ids = set()
+    for activation in active_activations:
+        if activation.gpu_id:
+            activated_gpu_ids.add(activation.gpu_id)
+
+    return activated_gpu_ids
+
+
+async def _process_gpu_device(
+    gpu, worker, allocated_gpu_map, activated_gpu_ids, include_allocated
+):
+    """
+    Process a single GPU device and return GPU info if it should be included.
+    """
+    # Generate GPU ID (format: worker_name:gpu_type:gpu_index)
+    gpu_type = gpu.type if gpu.type else "unknown"
+    gpu_id = f"{worker.name}:{gpu_type}:{gpu.index}"
+
+    # Check if this GPU is activated
+    is_activated = gpu_id in activated_gpu_ids
+    if not is_activated:
+        return None, False, False
+
+    # Check if this GPU is allocated
+    is_allocated = gpu_id in allocated_gpu_map
+    tenant_id = None
+    tenant_name = None
+    if is_allocated:
+        tenant_id, tenant_name = allocated_gpu_map[gpu_id]
+
+    # Skip allocated GPUs if not requested
+    if not include_allocated and is_allocated:
+        return None, is_allocated, True
+
+    # Calculate memory info
+    memory_total_gb = None
+    memory_available_gb = None
+    if gpu.memory and gpu.memory.total:
+        memory_total_gb = round(gpu.memory.total / (1024**3), 2)
+        if gpu.memory.used:
+            memory_used_gb = gpu.memory.used / (1024**3)
+            memory_available_gb = round(memory_total_gb - memory_used_gb, 2)
+        else:
+            memory_available_gb = memory_total_gb
+
+    # Create GPU info
+    gpu_info = AvailableGPUInfo(
+        gpu_id=gpu_id,
+        gpu_index=gpu.index,
+        gpu_name=gpu.name or "Unknown GPU",
+        gpu_type=gpu.type,
+        gpu_vendor=gpu.vendor,
+        memory_total_gb=memory_total_gb,
+        memory_available_gb=memory_available_gb,
+        is_allocated=is_allocated,
+        tenant_id=tenant_id,
+        tenant_name=tenant_name,
+    )
+
+    return gpu_info, is_allocated, False
+
+
+async def _process_worker(
+    worker, allocated_gpu_map, activated_gpu_ids, include_allocated
+):
+    """
+    Process a single worker and return worker info with GPU devices.
+    """
+    gpu_devices_list = []
+    worker_total_gpus = 0
+    worker_available_gpus = 0
+    worker_allocated_gpus = 0
+
+    # Extract GPU devices from worker status
+    if (
+        worker.status
+        and hasattr(worker.status, "gpu_devices")
+        and worker.status.gpu_devices
+    ):
+        for gpu in worker.status.gpu_devices:
+            gpu_info, is_allocated, skipped = await _process_gpu_device(
+                gpu, worker, allocated_gpu_map, activated_gpu_ids, include_allocated
+            )
+
+            if gpu_info:
+                gpu_devices_list.append(gpu_info)
+
+            if is_allocated:
+                worker_allocated_gpus += 1
+            else:
+                worker_available_gpus += 1
+
+        worker_total_gpus = len(worker.status.gpu_devices)
+
+    # Get cluster and rack names
+    cluster_name = None
+    rack_name = None
+    if worker.cluster:
+        cluster_name = worker.cluster.name
+    if worker.rack:
+        rack_name = worker.rack.name
+
+    # Create worker info
+    worker_info = AvailableWorkerInfo(
+        worker_id=worker.id,
+        worker_name=worker.name,
+        worker_ip=worker.ip,
+        worker_state=worker.state.value if worker.state else None,
+        cluster_id=worker.cluster_id,
+        cluster_name=cluster_name,
+        rack_id=worker.rack_id,
+        rack_name=rack_name,
+        total_gpus=worker_total_gpus,
+        available_gpus=worker_available_gpus,
+        allocated_gpus=worker_allocated_gpus,
+        gpu_devices=gpu_devices_list,
+    )
+
+    return worker_info, worker_total_gpus, worker_available_gpus, worker_allocated_gpus
+
+
 @router.get("/available-resources", response_model=AvailableResourcesResponse)
 async def get_available_resources(
     session: SessionDep,
@@ -168,28 +334,21 @@ async def get_available_resources(
         A list of workers with their GPU devices and allocation status.
         Only unallocated GPUs are returned by default.
     """
-    # Build query filters for workers
-    fields = {"deleted_at": None}
-    if cluster_id:
-        fields["cluster_id"] = cluster_id
-    if rack_id:
-        fields["rack_id"] = rack_id
+    # Build worker filters
+    worker_filters = await _build_worker_filters(cluster_id, rack_id)
 
     # Get all workers
-    workers = await Worker.all_by_fields(session, fields=fields)
+    workers = await Worker.all_by_fields(session, fields=worker_filters)
 
-    # Get all tenant resource allocations
+    # Initialize services
     resource_service = TenantResourceService(session)
     tenant_service = TenantService(session)
-    all_allocated_resources = await resource_service.get_active_resources()
 
-    # Build a map of allocated GPU IDs to tenant info
-    allocated_gpu_map = {}  # gpu_id -> (tenant_id, tenant_name)
-    for resource in all_allocated_resources:
-        if resource.gpu_id:
-            tenant = await tenant_service.get_by_id(resource.tenant_id)
-            tenant_name = tenant.name if tenant else "Unknown"
-            allocated_gpu_map[resource.gpu_id] = (resource.tenant_id, tenant_name)
+    # Build supporting data structures
+    allocated_gpu_map = await _build_allocated_gpu_map(
+        session, resource_service, tenant_service
+    )
+    activated_gpu_ids = await _build_activated_gpu_set(session)
 
     # Build response
     result_workers = []
@@ -198,91 +357,16 @@ async def get_available_resources(
     allocated_gpus_count = 0
 
     for worker in workers:
-        gpu_devices_list = []
-        worker_total_gpus = 0
-        worker_available_gpus = 0
-        worker_allocated_gpus = 0
-
-        # Extract GPU devices from worker status
-        if (
-            worker.status
-            and hasattr(worker.status, "gpu_devices")
-            and worker.status.gpu_devices
-        ):
-            for gpu in worker.status.gpu_devices:
-                # Generate GPU ID (format: worker_name:gpu_type:gpu_index)
-                gpu_type = gpu.type if gpu.type else "unknown"
-                gpu_id = f"{worker.name}:{gpu_type}:{gpu.index}"
-
-                # Check if this GPU is allocated
-                is_allocated = gpu_id in allocated_gpu_map
-                tenant_id = None
-                tenant_name = None
-                if is_allocated:
-                    tenant_id, tenant_name = allocated_gpu_map[gpu_id]
-                    worker_allocated_gpus += 1
-                    allocated_gpus_count += 1
-                else:
-                    worker_available_gpus += 1
-                    available_gpus_count += 1
-
-                # Skip allocated GPUs if not requested
-                if not include_allocated and is_allocated:
-                    continue
-
-                # Calculate memory info
-                memory_total_gb = None
-                memory_available_gb = None
-                if gpu.memory and gpu.memory.total:
-                    memory_total_gb = round(gpu.memory.total / (1024**3), 2)
-                    if gpu.memory.used:
-                        memory_used_gb = gpu.memory.used / (1024**3)
-                        memory_available_gb = round(memory_total_gb - memory_used_gb, 2)
-                    else:
-                        memory_available_gb = memory_total_gb
-
-                # Create GPU info
-                gpu_info = AvailableGPUInfo(
-                    gpu_id=gpu_id,
-                    gpu_index=gpu.index,
-                    gpu_name=gpu.name or "Unknown GPU",
-                    gpu_type=gpu.type,
-                    gpu_vendor=gpu.vendor,
-                    memory_total_gb=memory_total_gb,
-                    memory_available_gb=memory_available_gb,
-                    is_allocated=is_allocated,
-                    tenant_id=tenant_id,
-                    tenant_name=tenant_name,
-                )
-                gpu_devices_list.append(gpu_info)
-
-            worker_total_gpus = len(worker.status.gpu_devices)
-            total_gpus_count += worker_total_gpus
-
-        # Get cluster and rack names
-        cluster_name = None
-        rack_name = None
-        if worker.cluster:
-            cluster_name = worker.cluster.name
-        if worker.rack:
-            rack_name = worker.rack.name
-
-        # Create worker info
-        worker_info = AvailableWorkerInfo(
-            worker_id=worker.id,
-            worker_name=worker.name,
-            worker_ip=worker.ip,
-            worker_state=worker.state.value if worker.state else None,
-            cluster_id=worker.cluster_id,
-            cluster_name=cluster_name,
-            rack_id=worker.rack_id,
-            rack_name=rack_name,
-            total_gpus=worker_total_gpus,
-            available_gpus=worker_available_gpus,
-            allocated_gpus=worker_allocated_gpus,
-            gpu_devices=gpu_devices_list,
+        worker_info, worker_total, worker_available, worker_allocated = (
+            await _process_worker(
+                worker, allocated_gpu_map, activated_gpu_ids, include_allocated
+            )
         )
+
         result_workers.append(worker_info)
+        total_gpus_count += worker_total
+        available_gpus_count += worker_available
+        allocated_gpus_count += worker_allocated
 
     return AvailableResourcesResponse(
         workers=result_workers,
@@ -319,8 +403,13 @@ async def create_tenant(tenant_create: TenantCreateWithResources, session: Sessi
     if existing_tenant and not existing_tenant.deleted_at:
         raise AlreadyExistsException(f"Tenant '{tenant_create.name}' already exists")
 
-    # Remove timezone info from datetime fields to match database TIMESTAMP WITHOUT TIME ZONE
+    # Set resource_start_time to current time if resources are provided
+    # and no start time is specified
     resource_start_time = tenant_create.resource_start_time
+    if tenant_create.resources and not resource_start_time:
+        resource_start_time = datetime.now()
+
+    # Remove timezone info from datetime fields to match database TIMESTAMP WITHOUT TIME ZONE
     if resource_start_time and resource_start_time.tzinfo is not None:
         resource_start_time = resource_start_time.replace(tzinfo=None)
 

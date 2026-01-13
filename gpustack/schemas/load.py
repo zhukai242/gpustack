@@ -70,6 +70,10 @@ class WorkerLog(SQLModel, ActiveRecordMixin, table=True):
     severity: Optional[str] = Field(default=None)
     # status
     status: Optional[str] = Field(default=None)
+    # processor
+    processor: Optional[str] = Field(default=None, description="处理人")
+    # comment
+    comment: Optional[str] = Field(default=None, description="处理意见")
 
 
 class GPULog(SQLModel, ActiveRecordMixin, table=True):
@@ -91,6 +95,10 @@ class GPULog(SQLModel, ActiveRecordMixin, table=True):
     severity: Optional[str] = Field(default=None)
     # status
     status: Optional[str] = Field(default=None)
+    # processor
+    processor: Optional[str] = Field(default=None, description="处理人")
+    # comment
+    comment: Optional[str] = Field(default=None, description="处理意见")
 
 
 class WorkerLogCreate(SQLModel):
@@ -99,6 +107,8 @@ class WorkerLogCreate(SQLModel):
     log_content: Optional[str] = None
     severity: Optional[str] = None
     status: Optional[str] = None
+    processor: Optional[str] = None
+    comment: Optional[str] = None
 
 
 class GPULogCreate(SQLModel):
@@ -109,3 +119,5 @@ class GPULogCreate(SQLModel):
     log_content: Optional[str] = None
     severity: Optional[str] = None
     status: Optional[str] = None
+    processor: Optional[str] = None
+    comment: Optional[str] = None
