@@ -19,6 +19,7 @@ from gpustack.schemas.workers import (
 )
 from gpustack.utils.profiling import time_decorator
 from gpustack.utils.uuid import get_system_uuid, get_machine_id, get_legacy_uuid
+from gpustack.worker.systemlog import _inject_system_logs
 
 
 logger = logging.getLogger(__name__)
@@ -111,6 +112,14 @@ class WorkerStatusCollector:
         metrics_port = self._cfg.worker_metrics_port
         if self._cfg.disable_worker_metrics:
             metrics_port = -1
+
+        # Collect system logs
+        if not initial:
+            try:
+                status.log = []
+                _inject_system_logs(status.log)
+            except Exception as e:
+                logger.error(f"Failed to collect system logs: {e}")
 
         return WorkerStatusPublic(
             advertise_address=self._cfg.advertise_address or self._worker_ip_getter(),
