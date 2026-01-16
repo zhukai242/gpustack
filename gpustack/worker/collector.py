@@ -22,6 +22,13 @@ from gpustack.utils.uuid import get_system_uuid, get_machine_id, get_legacy_uuid
 from gpustack.worker.systemlog import _inject_system_logs
 
 
+# Global timestamp variable to track last log timestamp (in microseconds since boot)
+_system_log_timestamp = 0
+
+# Global NPU log timestamp tracking: {device_id: {"file_path": str, "timestamp": float}}
+_npu_log_timestamp = {}
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -116,8 +123,11 @@ class WorkerStatusCollector:
         # Collect system logs
         if not initial:
             try:
+                global _system_log_timestamp
                 status.log = []
-                _inject_system_logs(status.log)
+                _, _system_log_timestamp = _inject_system_logs(
+                    status.log, _system_log_timestamp
+                )
             except Exception as e:
                 logger.error(f"Failed to collect system logs: {e}")
 

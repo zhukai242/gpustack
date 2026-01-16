@@ -6,9 +6,6 @@ from typing import List, Dict, Any
 
 logger = logging.getLogger(__name__)
 
-# Track the last timestamp in microseconds since boot
-_last_timestamp = 0
-
 # Cache system boot time (Unix timestamp in seconds)
 _boot_time = 0
 
@@ -67,7 +64,7 @@ def parse_line(line: str) -> tuple[int, str, str] | None:
 
 
 def add_to_log(
-    logs: List[Dict[str, Any]], message: str, boot_time_us: int, severity: str
+    logs: List[Dict[str, Any]], message: str, boot_time_us: int, loglevel: str
 ) -> None:
     """
     Add a log entry to the logs list with proper formatting.
@@ -76,7 +73,7 @@ def add_to_log(
         logs: List to append log entries to
         message: The log message (pure ASCII)
         boot_time_us: The time in microseconds since boot as integer
-        severity: The severity (ERROR or WARNING)
+        loglevel: The log level (ERROR or WARNING)
     """
     global _boot_time
     # Lazy initialization for boot time (set when first used)
@@ -97,44 +94,29 @@ def add_to_log(
     # Construct datetime object from integer seconds and microseconds
     dt = datetime.fromtimestamp(seconds).replace(microsecond=micros)
     formatted_time = dt.strftime("%Y-%m-%d %H:%M:%S.%f")
-    logs.append({"timestamp": formatted_time, "severity": severity, "message": message})
+    logs.append({"timestamp": formatted_time, "loglevel": loglevel, "message": message})
 
 
-def is_new_log(timestamp: int) -> bool:
-    """
-    Check if the log with the given timestamp is new.
-    If it's new, update the last timestamp position.
-
-    Args:
-        timestamp: The timestamp in microseconds since boot
-
-    Returns:
-        bool: True if the log is new, False otherwise
-    """
-    global _last_timestamp
-    is_new = False
-
-    if timestamp > _last_timestamp:
-        is_new = True
-        _last_timestamp = timestamp
-
-    return is_new
-
-
-def _inject_system_logs(logs: List[Dict[str, Any]]) -> bool:
+def _inject_system_logs(
+    logs: List[Dict[str, Any]], since_timestamp: int = 0
+) -> tuple[bool, int]:
     """
     Collect system logs from /dev/kmsg using dmesg command.
-    This function reads new logs since the last call and appends them to the provided logs list.
+    This function reads logs since the provided timestamp and appends them to the provided logs list.
     Only logs with severity ERROR or WARNING are included.
 
     Args:
         logs: List to append log entries to.
+        since_timestamp: Timestamp in microseconds since boot to start collecting logs from.
 
     Returns:
-        bool: True if the operation succeeded, False otherwise.
+        tuple[bool, int]: A tuple containing:
+            - bool: True if the operation succeeded, False otherwise.
+            - int: The maximum timestamp found in the logs (in microseconds since boot),
+                   to be used as the since_timestamp for the next call.
     """
     if logs is None:
-        return False
+        return False, since_timestamp
 
     try:
         # Use dmesg with -x to get facility, level, and timestamp information in one call
@@ -143,83 +125,101 @@ def _inject_system_logs(logs: List[Dict[str, Any]]) -> bool:
         )
         dmesg_output = result.stdout
 
+        max_timestamp = since_timestamp
+
         # Process each line from dmesg -x output
         for line in dmesg_output.splitlines():
             line = line.strip()
             if not line:
                 continue
-
-            # Parse the line using our new parse_line function
             parsed = parse_line(line)
             if parsed is None:
                 continue
-
             boot_time_us, level, message = parsed
 
+            # Check if this log is after the provided timestamp
+            if boot_time_us <= since_timestamp:
+                continue
+            if max_timestamp < boot_time_us:
+                max_timestamp = boot_time_us
+
             # Check if it's a warning or error (case insensitive)
-            severity = ""
+            loglevel = ""
             if level in ["emerg", "alert", "crit", "err"]:
-                severity = "ERROR"
+                loglevel = "ERROR"
             elif level in ["warn"]:
-                severity = "WARNING"
+                loglevel = "WARNING"
             else:
                 # Skip info and debug messages
                 continue
 
-            # Check if this is a new log
-            if is_new_log(boot_time_us):
-                # Add the log entry (using ASCII only)
-                add_to_log(
-                    logs,
-                    message.encode('ascii', 'ignore').decode('ascii'),
-                    boot_time_us,
-                    severity,
-                )
+            # Add the log entry (using ASCII only)
+            add_to_log(
+                logs,
+                message.encode('ascii', 'ignore').decode('ascii'),
+                boot_time_us,
+                loglevel,
+            )
 
-        return True
+        return True, max_timestamp
     except Exception as e:
         logger.error(f"Failed to collect system logs: {e}")
-        return False
+        return False, since_timestamp
 
 
 if __name__ == "__main__":
     """
-    Test the _inject_system_logs function.
+    Test the _inject_system_logs function with timestamp functionality.
     """
-    print("Testing _inject_system_logs function...")
+    print("Testing _inject_system_logs function with timestamp...")
+
+    # Global timestamp variable for testing
+    global_timestamp = 0
 
     # First call - should get all existing warnings/errors
-    print("\n1. First call:")
+    print("\n1. First call (initial timestamp=0):")
     logs = []
-    success = _inject_system_logs(logs)
+    success, new_timestamp = _inject_system_logs(logs, global_timestamp)
     print(f"   Operation {'succeeded' if success else 'failed'}")
     print(f"   Found {len(logs)} entries")
+    print(f"   New timestamp: {new_timestamp}")
     for entry in logs:
         print(f"   {entry['timestamp']} {entry['severity']}: {entry['message']}")
+
+    # Update global timestamp
+    global_timestamp = new_timestamp
 
     # Second call - should get nothing new
     print("\n2. Second call (should be empty):")
     logs2 = []
-    success = _inject_system_logs(logs2)
+    success, new_timestamp = _inject_system_logs(logs2, global_timestamp)
     print(f"   Operation {'succeeded' if success else 'failed'}")
     print(f"   Found {len(logs2)} entries")
+    print(f"   New timestamp: {new_timestamp}")
     for entry in logs2:
         print(f"   {entry['timestamp']} {entry['severity']}: {entry['message']}")
+
+    # Update global timestamp
+    global_timestamp = new_timestamp
 
     # Write a test warning
     print("\n3. Writing test warning...")
     import os
 
-    os.system("echo '<4>test: this is a test warning' > /dev/kmsg")
+    os.system("echo '<4>test: this is a test warning with timestamp' > /dev/kmsg")
     time.sleep(0.5)  # Give some time for the message to be processed
 
     # Third call - should get the new warning
     print("\n4. Third call (should find the warning):")
     logs3 = []
-    success = _inject_system_logs(logs3)
+    success, new_timestamp = _inject_system_logs(logs3, global_timestamp)
     print(f"   Operation {'succeeded' if success else 'failed'}")
     print(f"   Found {len(logs3)} entries")
+    print(f"   New timestamp: {new_timestamp}")
     for entry in logs3:
         print(f"   {entry['timestamp']} {entry['severity']}: {entry['message']}")
+
+    # Update global timestamp
+    global_timestamp = new_timestamp
 
     print("\nTest completed.")
