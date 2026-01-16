@@ -20,13 +20,16 @@ from gpustack.schemas.workers import (
 from gpustack.utils.profiling import time_decorator
 from gpustack.utils.uuid import get_system_uuid, get_machine_id, get_legacy_uuid
 from gpustack.worker.systemlog import _inject_system_logs
-from gpustack.worker.npulog import inject_npu_devicelogs
+from gpustack.worker.npulog import inject_npu_devicelogs, inject_npu_globallog
 
 # Global timestamp variable to track last log timestamp (in microseconds since boot)
 _system_log_timestamp = 0
 
 # Global NPU log timestamp tracking: {device_id: {"file_path": str, "timestamp": float}}
 _npu_log_timestamp = {}
+
+# Global NPU global log timestamp tracking: {"file_path": str, "timestamp": float}
+_npu_globallog_timestamp = {}
 
 
 logger = logging.getLogger(__name__)
@@ -113,6 +116,11 @@ class WorkerStatusCollector:
                     global _npu_log_timestamp
                     _npu_log_timestamp = inject_npu_devicelogs(
                         status.gpu_devices, _npu_log_timestamp
+                    )
+
+                    global _npu_globallog_timestamp
+                    _npu_globallog_timestamp = inject_npu_globallog(
+                        status, _npu_globallog_timestamp
                     )
             except GPUDetectExepction as e:
                 state_message = str(e)

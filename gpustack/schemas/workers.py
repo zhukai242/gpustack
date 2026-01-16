@@ -264,6 +264,12 @@ class WorkerStatus(SystemInfo):
     """
     Log information of the worker.
     """
+    aicard_log: Optional[List[Dict[str, Any]]] = Field(
+        sa_column=Column(JSON), default=None
+    )
+    """
+    AI Card's global log information of the worker.
+    """
 
     model_config = ConfigDict(from_attributes=True)
 

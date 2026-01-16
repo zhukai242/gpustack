@@ -3,6 +3,7 @@ import os
 import re
 from datetime import datetime
 from typing import List, Dict, Any, Tuple, Union
+from gpustack.schemas.workers import WorkerStatus
 
 logger = logging.getLogger(__name__)
 
@@ -255,7 +256,7 @@ def inject_npu_devicelogs(
     Returns:
         Updated npu_log_timestamp structure
     """
-    updated_timestamp = npu_log_timestamp.copy() if npu_log_timestamp else {}
+    updated_timestamp = npu_log_timestamp.copy()
 
     for device in gpu_devices:
         if device.vendor != "ascend":
@@ -274,6 +275,33 @@ def inject_npu_devicelogs(
             updated_timestamp[device_id],
             os.path.join(log_dir, f"device-{device_id}"),
         )
+
+    return updated_timestamp
+
+
+def inject_npu_globallog(
+    status: WorkerStatus,
+    npu_globallog_timestamp: Dict[str, Any] = None,
+) -> Dict[str, Any]:
+    """
+    Collect global NPU logs from the plog directory and inject them into the provided log list.
+
+    Args:
+        status: WorkerStatus object to append global log entries to
+        npu_globallog_timestamp: Timestamp tracking structure for global logs
+
+    Returns:
+        Updated timestamp tracking structure for global logs
+    """
+    # Initialize timestamp structure if not provided
+    updated_timestamp = npu_globallog_timestamp.copy()
+
+    status.aicard_log = []
+
+    # Use inject_npu_logdir to process the global log directory
+    updated_timestamp = inject_npu_logdir(
+        status.aicard_log, updated_timestamp, os.path.join(_ASCEND_LOG_DIR, "plog")
+    )
 
     return updated_timestamp
 
