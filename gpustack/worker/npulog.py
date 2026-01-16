@@ -293,6 +293,13 @@ def inject_npu_globallog(
     Returns:
         Updated timestamp tracking structure for global logs
     """
+
+    for device in gpu_devices:
+        if device.vendor == "ascend":
+            break
+    else:
+        return npu_globallog_timestamp
+
     # Initialize timestamp structure if not provided
     updated_timestamp = npu_globallog_timestamp.copy()
 
