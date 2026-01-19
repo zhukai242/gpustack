@@ -171,35 +171,48 @@ async def list_tenant_resources(
 @router.get("/top-utilization", response_model=TenantResourceUtilizationList)
 async def get_top_tenant_utilization(session: SessionDep):
     """Get top 5 tenants by GPU count with current utilization metrics for star chart."""
-    # Step 1: Get top 5 tenants by GPU count
+    # Step 1: Get all active tenants first
+    stmt_tenants = select(Tenant).where(Tenant.deleted_at.is_(None))
+    tenants_result = await session.exec(stmt_tenants)
+    all_tenants = tenants_result.all()
+
+    if not all_tenants:
+        return TenantResourceUtilizationList(items=[])
+
+    # Step 2: Get GPU count for each tenant
     stmt_tenant_gpu_count = (
         select(
             TenantResource.tenant_id, func.count(TenantResource.id).label("gpu_count")
         )
         .where(TenantResource.deleted_at.is_(None))
         .group_by(TenantResource.tenant_id)
-        .order_by(func.count(TenantResource.id).desc())
-        .limit(5)
     )
 
-    top_tenants_result = await session.exec(stmt_tenant_gpu_count)
-    top_tenants = top_tenants_result.all()
+    tenant_gpu_count_result = await session.exec(stmt_tenant_gpu_count)
+    tenant_gpu_count_map = {
+        result.tenant_id: result.gpu_count for result in tenant_gpu_count_result.all()
+    }
 
-    if not top_tenants:
-        return TenantResourceUtilizationList(items=[])
+    # Create tenant dict with their GPU count
+    tenants_dict = {
+        tenant.id: {
+            "tenant": tenant,
+            "gpu_count": tenant_gpu_count_map.get(tenant.id, 0),
+        }
+        for tenant in all_tenants
+    }
 
-    # Step 2: Get tenant details for these top tenants
-    tenant_ids = [tt.tenant_id for tt in top_tenants]
-    stmt_tenants = select(Tenant).where(
-        Tenant.id.in_(tenant_ids), Tenant.deleted_at.is_(None)
-    )
+    # Step 3: Sort tenants by GPU count and get top 5
+    sorted_tenants = sorted(
+        tenants_dict.values(), key=lambda x: x["gpu_count"], reverse=True
+    )[:5]
 
-    tenants_result = await session.exec(stmt_tenants)
-    tenants = {t.id: t for t in tenants_result.all()}
+    # Get tenant_ids of top 5 tenants
+    top_tenant_ids = [tenant_data["tenant"].id for tenant_data in sorted_tenants]
 
-    # Step 3: Get GPU resources for these tenants to get gpu_ids
+    # Step 4: Get GPU resources for top 5 tenants to get gpu_ids
     stmt_tenant_resources = select(TenantResource).where(
-        TenantResource.tenant_id.in_(tenant_ids),
+        TenantResource.tenant_id.in_(top_tenant_ids),
         TenantResource.deleted_at.is_(None),
         TenantResource.gpu_id.is_not(None),
     )
@@ -208,14 +221,14 @@ async def get_top_tenant_utilization(session: SessionDep):
     resources = resources_result.all()
 
     # Group resources by tenant_id
-    resources_by_tenant = {tid: [] for tid in tenant_ids}
+    resources_by_tenant = {tid: [] for tid in top_tenant_ids}
     for resource in resources:
         resources_by_tenant[resource.tenant_id].append(resource)
 
     # Get all gpu_ids for these resources
     gpu_ids = [r.gpu_id for r in resources if r.gpu_id]
 
-    # Step 4: Get latest GPU loads for these gpu_ids
+    # Step 5: Get latest GPU loads for these gpu_ids
     stmt_latest_loads = (
         select(GPULoad.gpu_id, func.max(GPULoad.timestamp).label("latest_timestamp"))
         .where(GPULoad.gpu_id.in_(gpu_ids))
@@ -247,15 +260,12 @@ async def get_top_tenant_utilization(session: SessionDep):
         for load in gpu_loads_result.all():
             latest_load_data[load.gpu_id] = load
 
-    # Step 5: Calculate utilization for each tenant
+    # Step 6: Calculate utilization for each top tenant
     utilization_list = []
-    for tt in top_tenants:
-        tenant_id = tt.tenant_id
-        gpu_count = tt.gpu_count
-
-        tenant = tenants.get(tenant_id)
-        if not tenant:
-            continue
+    for tenant_data in sorted_tenants:
+        tenant = tenant_data["tenant"]
+        tenant_id = tenant.id
+        gpu_count = tenant_data["gpu_count"]
 
         tenant_resources = resources_by_tenant.get(tenant_id, [])
 
@@ -274,15 +284,154 @@ async def get_top_tenant_utilization(session: SessionDep):
                 if load.vram_utilization is not None:
                     vram_utilizations.append(load.vram_utilization)
 
-        # Calculate average utilization
-        avg_gpu_util = None
-        avg_vram_util = None
+        # Calculate average utilization, default to 0 if no data
+        avg_gpu_util = (
+            sum(gpu_utilizations) / len(gpu_utilizations) if gpu_utilizations else 0.0
+        )
+        avg_vram_util = (
+            sum(vram_utilizations) / len(vram_utilizations)
+            if vram_utilizations
+            else 0.0
+        )
 
-        if gpu_utilizations:
-            avg_gpu_util = sum(gpu_utilizations) / len(gpu_utilizations)
+        # Create utilization entry
+        utilization = TenantResourceUtilization(
+            tenant_id=tenant_id,
+            tenant_name=tenant.name,
+            gpu_count=gpu_count,
+            gpu_utilization=avg_gpu_util,
+            vram_utilization=avg_vram_util,
+        )
+        utilization_list.append(utilization)
 
-        if vram_utilizations:
-            avg_vram_util = sum(vram_utilizations) / len(vram_utilizations)
+    return TenantResourceUtilizationList(items=utilization_list)
+
+
+@router.get("/all-utilization", response_model=TenantResourceUtilizationList)
+async def get_all_tenant_utilization(session: SessionDep):
+    """Get all tenants with current GPU and VRAM utilization metrics for star chart comparison."""
+    # Step 1: Get all active tenants
+    stmt_tenants = select(Tenant).where(Tenant.deleted_at.is_(None))
+    tenants_result = await session.exec(stmt_tenants)
+    all_tenants = tenants_result.all()
+
+    if not all_tenants:
+        return TenantResourceUtilizationList(items=[])
+
+    # Step 2: Get GPU count for each tenant
+    stmt_tenant_gpu_count = (
+        select(
+            TenantResource.tenant_id, func.count(TenantResource.id).label("gpu_count")
+        )
+        .where(TenantResource.deleted_at.is_(None))
+        .group_by(TenantResource.tenant_id)
+    )
+
+    tenant_gpu_count_result = await session.exec(stmt_tenant_gpu_count)
+    tenant_gpu_count_map = {
+        result.tenant_id: result.gpu_count for result in tenant_gpu_count_result.all()
+    }
+
+    # Create tenant dict with their GPU count
+    tenants_dict = {
+        tenant.id: {
+            "tenant": tenant,
+            "gpu_count": tenant_gpu_count_map.get(tenant.id, 0),
+        }
+        for tenant in all_tenants
+    }
+
+    # Step 3: Sort tenants by GPU count
+    sorted_tenants = sorted(
+        tenants_dict.values(), key=lambda x: x["gpu_count"], reverse=True
+    )
+
+    # Get all tenant_ids
+    all_tenant_ids = [tenant_data["tenant"].id for tenant_data in sorted_tenants]
+
+    # Step 4: Get GPU resources for all tenants to get gpu_ids
+    stmt_tenant_resources = select(TenantResource).where(
+        TenantResource.tenant_id.in_(all_tenant_ids),
+        TenantResource.deleted_at.is_(None),
+        TenantResource.gpu_id.is_not(None),
+    )
+
+    resources_result = await session.exec(stmt_tenant_resources)
+    resources = resources_result.all()
+
+    # Group resources by tenant_id
+    resources_by_tenant = {tid: [] for tid in all_tenant_ids}
+    for resource in resources:
+        resources_by_tenant[resource.tenant_id].append(resource)
+
+    # Get all gpu_ids for these resources
+    gpu_ids = [r.gpu_id for r in resources if r.gpu_id]
+
+    # Step 5: Get latest GPU loads for these gpu_ids
+    stmt_latest_loads = (
+        select(GPULoad.gpu_id, func.max(GPULoad.timestamp).label("latest_timestamp"))
+        .where(GPULoad.gpu_id.in_(gpu_ids))
+        .group_by(GPULoad.gpu_id)
+    )
+
+    latest_loads_result = await session.exec(stmt_latest_loads)
+    latest_loads = latest_loads_result.all()
+
+    # Get the actual load data for these latest timestamps
+    latest_load_data = {}
+    if latest_loads:
+        gpu_id_timestamp_pairs = [
+            (ll.gpu_id, ll.latest_timestamp) for ll in latest_loads
+        ]
+
+        # Create conditions for each gpu_id and timestamp pair
+        load_conditions = []
+        for gpu_id, timestamp in gpu_id_timestamp_pairs:
+            load_conditions.append(
+                (GPULoad.gpu_id == gpu_id) & (GPULoad.timestamp == timestamp)
+            )
+
+        from sqlalchemy import or_
+
+        stmt_gpu_loads = select(GPULoad).where(or_(*load_conditions))
+
+        gpu_loads_result = await session.exec(stmt_gpu_loads)
+        for load in gpu_loads_result.all():
+            latest_load_data[load.gpu_id] = load
+
+    # Step 6: Calculate utilization for each tenant
+    utilization_list = []
+    for tenant_data in sorted_tenants:
+        tenant = tenant_data["tenant"]
+        tenant_id = tenant.id
+        gpu_count = tenant_data["gpu_count"]
+
+        tenant_resources = resources_by_tenant.get(tenant_id, [])
+
+        # Calculate average GPU utilization and VRAM utilization
+        gpu_utilizations = []
+        vram_utilizations = []
+
+        for resource in tenant_resources:
+            if not resource.gpu_id:
+                continue
+
+            load = latest_load_data.get(resource.gpu_id)
+            if load:
+                if load.gpu_utilization is not None:
+                    gpu_utilizations.append(load.gpu_utilization)
+                if load.vram_utilization is not None:
+                    vram_utilizations.append(load.vram_utilization)
+
+        # Calculate average utilization, default to 0 if no data
+        avg_gpu_util = (
+            sum(gpu_utilizations) / len(gpu_utilizations) if gpu_utilizations else 0.0
+        )
+        avg_vram_util = (
+            sum(vram_utilizations) / len(vram_utilizations)
+            if vram_utilizations
+            else 0.0
+        )
 
         # Create utilization entry
         utilization = TenantResourceUtilization(

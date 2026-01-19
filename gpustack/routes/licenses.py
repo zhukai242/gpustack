@@ -1,8 +1,9 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import select, func
 from sqlmodel.ext.asyncio.session import AsyncSession
+from pydantic import BaseModel, Field
 
 from gpustack.server.db import get_session
 from gpustack.schemas.licenses import (
@@ -17,9 +18,34 @@ from gpustack.schemas.licenses import (
     LicenseActivationPublic,
     LicenseStatusEnum,
 )
+from gpustack.schemas.workers import Worker
 
 
 router = APIRouter(prefix="/licenses", tags=["licenses"])
+
+
+# New Pydantic models for license activation status API
+class GPULicenseStatus(BaseModel):
+    """GPU license activation status."""
+
+    gpu_id: str = Field(..., description="GPU ID")
+    gpu_type: Optional[str] = Field(None, description="GPU型号")
+    gpu_sn: str = Field(..., description="GPU序列号(uuid)")
+    license_expiration_time: Optional[datetime] = Field(
+        None, description="License到期时间"
+    )
+    status: str = Field(..., description="状态(已激活, 快到期, 未激活, 已过期)")
+
+
+class NodeLicenseStatus(BaseModel):
+    """Node license activation status."""
+
+    worker_name: str = Field(..., description="节点名称")
+    ip: str = Field(..., description="IP地址")
+    cpu: Optional[int] = Field(None, description="CPU核心数")
+    memory: Optional[int] = Field(None, description="内存大小(MB)")
+    status: str = Field(..., description="状态(已激活, 快到期, 未激活, 已过期)")
+    gpus: List[GPULicenseStatus] = Field(default_factory=list, description="GPU列表")
 
 
 @router.post("/", response_model=LicensePublic)
@@ -79,6 +105,148 @@ async def list_licenses(
         items=[LicensePublic.model_validate(item) for item in paginated_result.items],
         pagination=paginated_result.pagination,
     )
+
+
+def _group_activations_by_worker_and_gpu(activations: List[LicenseActivation]) -> dict:
+    """
+    Group license activations by worker_id and gpu_sn.
+    """
+    activation_map = {}
+    for activation in activations:
+        if activation.worker_id not in activation_map:
+            activation_map[activation.worker_id] = {}
+        activation_map[activation.worker_id][activation.gpu_sn] = activation
+    return activation_map
+
+
+def _create_node_status(worker: Worker) -> NodeLicenseStatus:
+    """
+    Create NodeLicenseStatus object for a worker.
+    """
+    cpu_total = None
+    if worker.status and worker.status.cpu:
+        cpu_total = worker.status.cpu.total
+    memory_total = None
+    if worker.status and worker.status.memory:
+        memory_total = worker.status.memory.total
+    return NodeLicenseStatus(
+        worker_name=worker.name,
+        ip=worker.ip,
+        cpu=cpu_total,
+        memory=memory_total,
+        status="未激活",
+        gpus=[],
+    )
+
+
+def _process_gpu_device(
+    gpu,
+    worker_name: str,
+    worker_activations: dict,
+    now: datetime,
+    soon_expire_threshold: timedelta,
+) -> GPULicenseStatus:
+    """
+    Process a single GPU device and return its license status.
+    """
+    # Generate gpu_id
+    if gpu.type and gpu.index is not None:
+        gpu_id = f"{worker_name}:{gpu.type}:{gpu.index}"
+    else:
+        gpu_id = f"{worker_name}:unknown:{gpu.index}"
+    gpu_sn = gpu.uuid if gpu.uuid else "unknown"
+
+    # Check if this GPU has an activation
+    activation = worker_activations.get(gpu_sn)
+    gpu_status = "未激活"
+    expiration_time = None
+
+    if activation:
+        expiration_time = activation.expiration_time
+
+        if expiration_time and now > expiration_time:
+            gpu_status = "已过期"
+        elif expiration_time and (expiration_time - now) < soon_expire_threshold:
+            gpu_status = "快到期"
+        else:
+            gpu_status = "已激活"
+
+    # Create GPU status
+    return GPULicenseStatus(
+        gpu_id=gpu_id,
+        gpu_type=gpu.arch_family if gpu.arch_family else None,
+        gpu_sn=gpu_sn,
+        license_expiration_time=expiration_time,
+        status=gpu_status,
+    )
+
+
+def _determine_node_status(node_status: NodeLicenseStatus) -> NodeLicenseStatus:
+    """
+    Determine node status based on GPU statuses.
+    """
+    if node_status.gpus:
+        # Check if all GPUs are in the same status
+        all_statuses = {gpu.status for gpu in node_status.gpus}
+
+        if "已过期" in all_statuses:
+            node_status.status = "已过期"
+        elif "快到期" in all_statuses:
+            node_status.status = "快到期"
+        elif "未激活" in all_statuses:
+            node_status.status = "未激活"
+        else:
+            node_status.status = "已激活"
+    return node_status
+
+
+@router.get("/activation-status", response_model=List[NodeLicenseStatus])
+async def get_license_activation_status(session: AsyncSession = Depends(get_session)):
+    """
+    Get license activation status list by node and GPU.
+    Returns nodes with their GPUs and their license activation status.
+    """
+    # Get all workers
+    workers = await session.exec(select(Worker))
+    workers = workers.all()
+
+    # Get all license activations
+    activations = await session.exec(select(LicenseActivation))
+    activations = activations.all()
+
+    # Group activations by worker_id and gpu_sn
+    activation_map = _group_activations_by_worker_and_gpu(activations)
+
+    # Prepare response data
+    node_status_list = []
+    now = datetime.utcnow()
+    soon_expire_threshold = timedelta(days=7)
+
+    for worker in workers:
+        # Create node status
+        node_status = _create_node_status(worker)
+
+        # Get activations for this worker
+        worker_activations = activation_map.get(worker.id, {})
+
+        # Process each GPU device
+        if worker.status and worker.status.gpu_devices:
+            gpu_devices = worker.status.gpu_devices
+        else:
+            gpu_devices = []
+
+        for gpu in gpu_devices:
+            gpu_status = _process_gpu_device(
+                gpu, worker.name, worker_activations, now, soon_expire_threshold
+            )
+            node_status.gpus.append(gpu_status)
+
+        # Determine node status based on GPU statuses
+        node_status = _determine_node_status(node_status)
+
+        node_status_list.append(node_status)
+
+    return node_status_list
 
 
 @router.get("/{license_id}", response_model=LicensePublic)

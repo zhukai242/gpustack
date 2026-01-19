@@ -144,3 +144,109 @@ class ClusterStats(BaseModel):
     utilization: UtilizationData = Field(default_factory=UtilizationData)
     alerts: AlertData = Field(default_factory=AlertData)
     resource_saturation: float = Field(default=0.0)
+
+
+class RackGPUUtilization(BaseModel):
+    """Rack-level GPU utilization statistics."""
+
+    rack_id: int  # Rack ID
+    rack_name: str  # Rack name
+    avg_gpu_utilization: float  # Average GPU utilization percentage
+    avg_vram_utilization: float  # Average VRAM utilization percentage
+
+
+class RackGPUUtilizationResponse(BaseModel):
+    """Response for rack GPU utilization statistics."""
+
+    rack_gpu_utilizations: List[RackGPUUtilization] = Field(default_factory=list)
+
+
+class GPUModelUtilization(BaseModel):
+    """GPU model-level utilization statistics."""
+
+    gpu_type: str  # GPU model/type
+    count: int  # Number of GPUs of this type
+    avg_gpu_utilization: float  # Average GPU utilization percentage for this model
+    avg_vram_utilization: float  # Average VRAM utilization percentage for this model
+
+
+class RackGPUModelUtilization(BaseModel):
+    """Rack-level GPU model utilization statistics."""
+
+    rack_id: int  # Rack ID
+    rack_name: str  # Rack name
+    gpu_models: List[GPUModelUtilization] = Field(default_factory=list)
+
+
+class RackGPUModelUtilizationResponse(BaseModel):
+    """Response for rack GPU model utilization statistics."""
+
+    rack_gpu_model_utilizations: List[RackGPUModelUtilization] = Field(
+        default_factory=list
+    )
+
+
+class GPUHeatmapData(BaseModel):
+    """GPU device heatmap data."""
+
+    index: int  # GPU index on the worker
+    device_id: str  # GPU unique identifier
+    gpu_utilization: float  # GPU utilization percentage
+    vram_utilization: float  # VRAM utilization percentage
+    gpu_type: str  # GPU model/type
+
+
+class NodeHeatmapData(BaseModel):
+    """Node (worker) level heatmap data."""
+
+    node_id: int  # Worker ID
+    node_name: str  # Worker name
+    rack_id: int  # Rack ID
+    rack_name: str  # Rack name
+    cpu_utilization: float  # CPU utilization percentage
+    ram_utilization: float  # RAM utilization percentage
+    gpus: List[GPUHeatmapData]  # List of GPU devices with utilization
+
+
+class RackHeatmapData(BaseModel):
+    """Rack level heatmap data."""
+
+    rack_id: int  # Rack ID
+    rack_name: str  # Rack name
+    nodes: List[NodeHeatmapData]  # List of nodes in this rack
+
+
+class HeatmapResponse(BaseModel):
+    """Heatmap response containing both rack and node level data."""
+
+    cluster_id: int  # Cluster ID
+    rack_heatmap: Optional[List[RackHeatmapData]] = None  # Rack level heatmap data
+    node_heatmap: Optional[List[NodeHeatmapData]] = None  # Node level heatmap data
+
+
+class GPUModeHealthStats(BaseModel):
+    """GPU model health statistics."""
+
+    arch_family: str  # GPU architecture family
+    gpu_type: str  # GPU model/type (for reference)
+    count: int  # Number of GPUs of this architecture family
+    avg_temperature: float  # Average temperature for this architecture family
+    total_warnings: int  # Total warning logs for this architecture family
+    total_errors: int  # Total error logs for this architecture family
+    health_score: float  # Health score (0-100), higher is better
+
+
+class RackGPUHealthStats(BaseModel):
+    """Rack-level GPU health statistics by model."""
+
+    rack_id: int  # Rack ID
+    rack_name: str  # Rack name
+    gpu_models: List[GPUModeHealthStats] = Field(
+        default_factory=list
+    )  # GPU model health stats
+
+
+class RackGPUHealthResponse(BaseModel):
+    """Response for rack GPU health statistics by model."""
+
+    rack_gpu_health: List[RackGPUHealthStats] = Field(default_factory=list)

@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlmodel import select
+from sqlalchemy import literal_column
 
 from gpustack.api.exceptions import (
     AlreadyExistsException,
@@ -25,7 +26,7 @@ from gpustack.schemas.tenants import (
     TenantResourceAdjustmentCreate,
 )
 from gpustack.schemas.workers import Worker
-from gpustack.schemas.licenses import LicenseActivation, LicenseStatusEnum
+from gpustack.schemas.licenses import LicenseActivation
 from gpustack.server.tenant_services import (
     TenantService,
     TenantResourceService,
@@ -144,6 +145,36 @@ class AvailableResourcesResponse(BaseModel):
     allocated_gpus: int = 0
 
 
+class GPUModelCount(BaseModel):
+    """Count of GPUs by model with status information."""
+
+    gpu_model: str
+    total_count: int
+    allocated_count: int
+    activated_count: int
+    available_count: int
+
+
+class GPUModelDetails(BaseModel):
+    """Detailed information about a GPU model."""
+
+    gpu_model: str
+    total_count: int
+    allocated_count: int
+    activated_count: int
+    available_count: int
+
+
+class GPUModelStatsResponse(BaseModel):
+    """Response containing GPU models with their status counts."""
+
+    gpu_models: List[GPUModelDetails] = Field(default_factory=list)
+    total_gpus: int = 0
+    allocated_gpus: int = 0
+    activated_gpus: int = 0
+    available_gpus: int = 0
+
+
 # ============ Tenant Routes ============
 
 
@@ -187,7 +218,7 @@ async def _build_activated_gpu_set(session: SessionDep) -> set:
     """
     active_activations = await session.exec(
         select(LicenseActivation).where(
-            LicenseActivation.status == LicenseStatusEnum.ACTIVE
+            LicenseActivation.status == literal_column("'ACTIVE'")
         )
     )
 
@@ -377,6 +408,126 @@ async def get_available_resources(
     )
 
 
+@router.get("/gpu-model-stats", response_model=GPUModelStatsResponse)
+async def get_gpu_model_stats(
+    session: SessionDep,
+    include_allocated: bool = True,
+    include_activated: bool = True,
+    include_available: bool = True,
+):
+    """
+    Get GPU models with their status counts (total, allocated, activated, available).
+
+    This endpoint provides detailed statistics for all GPU models, including:
+    - total_count: Total number of GPUs of this model
+    - allocated_count: Number of GPUs allocated to tenants
+    - activated_count: Number of GPUs with active license activations
+    - available_count: Number of GPUs available for allocation
+
+    Query Parameters:
+        - include_allocated: Include allocated GPUs in the response (default: True)
+        - include_activated: Include activated GPUs in the response (default: True)
+        - include_available: Include available GPUs in the response (default: True)
+    """
+    from gpustack.schemas.tenants import TenantResource
+    from gpustack.schemas.licenses import LicenseActivation
+    from gpustack.schemas.gpu_devices import GPUDevice
+
+    # Get all GPU devices from the view
+    all_gpus = await session.exec(select(GPUDevice))
+    all_gpus = all_gpus.all()
+
+    # Get all active license activations
+    active_activations = await session.exec(
+        select(LicenseActivation).where(
+            LicenseActivation.status == literal_column("'ACTIVE'")
+        )
+    )
+    active_activations = active_activations.all()
+    activated_gpu_ids = {
+        activation.gpu_id for activation in active_activations if activation.gpu_id
+    }
+
+    # Get all allocated resources
+    allocated_resources = await session.exec(
+        select(TenantResource).where(TenantResource.deleted_at.is_(None))
+    )
+    allocated_resources = allocated_resources.all()
+    allocated_gpu_ids = {
+        resource.gpu_id for resource in allocated_resources if resource.gpu_id
+    }
+
+    # Initialize counters
+    gpu_stats = {}
+    total_gpus = 0
+    total_allocated = 0
+    total_activated = 0
+    total_available = 0
+
+    # Process each GPU device from the view
+    for gpu in all_gpus:
+        # Use arch_family as the GPU model
+        gpu_model = gpu.arch_family or "Unknown"
+
+        # Update counters
+        if gpu_model not in gpu_stats:
+            gpu_stats[gpu_model] = {
+                "total": 0,
+                "activated": 0,
+                "allocated": 0,
+                "available": 0,
+            }
+
+        # Increment total count
+        gpu_stats[gpu_model]["total"] += 1
+        total_gpus += 1
+
+        # Check if GPU is activated
+        if gpu.id in activated_gpu_ids:
+            gpu_stats[gpu_model]["activated"] += 1
+            total_activated += 1
+
+        # Check if GPU is allocated
+        if gpu.id in allocated_gpu_ids:
+            gpu_stats[gpu_model]["allocated"] += 1
+            total_allocated += 1
+        else:
+            gpu_stats[gpu_model]["available"] += 1
+            total_available += 1
+
+    # Format response
+    gpu_models = []
+    for gpu_model, stats in gpu_stats.items():
+        gpu_models.append(
+            GPUModelDetails(
+                gpu_model=gpu_model,
+                total_count=stats["total"],
+                allocated_count=stats["allocated"],
+                activated_count=stats["activated"],
+                available_count=stats["available"],
+            )
+        )
+
+    return GPUModelStatsResponse(
+        gpu_models=gpu_models,
+        total_gpus=total_gpus,
+        allocated_gpus=total_allocated,
+        activated_gpus=total_activated,
+        available_gpus=total_available,
+    )
+
+
+@router.get("/activated-gpu-models", response_model=GPUModelStatsResponse)
+async def get_activated_gpu_models(session: SessionDep):
+    """
+    Deprecated: Use /gpu-model-stats instead.
+    Get all activated GPU models and their counts.
+    """
+    return await get_gpu_model_stats(
+        session, include_allocated=True, include_activated=True, include_available=True
+    )
+
+
 @router.post(
     "",
     response_model=TenantPublic,
@@ -520,13 +671,93 @@ async def list_tenants(
         )
 
     # Get paginated tenants
-    return await Tenant.paginated_by_query(
+    paginated_tenants = await Tenant.paginated_by_query(
         session=session,
         fields=fields,
         fuzzy_fields=fuzzy_fields,
         page=params.page,
         per_page=params.perPage,
         order_by=params.order_by,
+    )
+
+    # Get all tenant IDs for GPU resource query
+    tenant_ids = [tenant.id for tenant in paginated_tenants.items]
+    if not tenant_ids:
+        return paginated_tenants
+
+    # Query GPU resources for all tenants
+    from sqlmodel import select
+    from gpustack.schemas.tenants import TenantResource, TenantResourceDetail
+    from gpustack.schemas.gpu_devices import GPUDevice
+
+    # Get all tenant resources
+    stmt_resources = select(TenantResource).where(
+        TenantResource.tenant_id.in_(tenant_ids)
+    )
+    tenant_resources = await session.exec(stmt_resources)
+    tenant_resources = tenant_resources.all()
+
+    # Group resources by tenant ID
+    resources_by_tenant = {}
+    for resource in tenant_resources:
+        if resource.tenant_id not in resources_by_tenant:
+            resources_by_tenant[resource.tenant_id] = []
+        resources_by_tenant[resource.tenant_id].append(resource)
+
+    # Get all GPU IDs for arch_family query
+    gpu_ids = [resource.gpu_id for resource in tenant_resources if resource.gpu_id]
+    if gpu_ids:
+        stmt_gpu_devices = select(GPUDevice).where(GPUDevice.id.in_(gpu_ids))
+        gpu_devices = await session.exec(stmt_gpu_devices)
+        gpu_devices = gpu_devices.all()
+        # Create mapping from gpu_id to arch_family
+        gpu_arch_map = {gpu.id: gpu.arch_family for gpu in gpu_devices}
+    else:
+        gpu_arch_map = {}
+
+    # Process each tenant to add GPU stats and initialize resource_details
+    tenant_public_items = []
+    for tenant in paginated_tenants.items:
+        # Convert Tenant ORM model to dict
+        tenant_data = tenant.model_dump()
+
+        # Initialize resource_details
+        tenant_resources = resources_by_tenant.get(tenant.id, [])
+        resource_details = []
+
+        for resource in tenant_resources:
+            # Get GPU arch_family from gpu_devices view
+            gpu_type = gpu_arch_map.get(resource.gpu_id, "Unknown")
+
+            # Create resource detail item
+            resource_detail = TenantResourceDetail(
+                resource_id=resource.id,
+                worker_id=resource.worker_id,
+                gpu_id=resource.gpu_id,
+                gpu_type=gpu_type,
+                resource_start_time=resource.resource_start_time,
+                resource_end_time=resource.resource_end_time,
+                cumulative_usage_time=0.0,  # Default value, will be calculated if needed
+                current_gpu_utilization=None,
+                current_vram_utilization=None,
+                usage_trend=[],
+            )
+            resource_details.append(resource_detail)
+
+        # Add resource_details to tenant data
+        tenant_data["resource_details"] = resource_details
+        tenant_data["gpu_details"] = []
+        tenant_data["node_details"] = []
+
+        # Create TenantPublic object
+        tenant_public = TenantPublic(**tenant_data)
+        tenant_public_items.append(tenant_public)
+
+    # Create new PaginatedList with TenantPublic items
+    from gpustack.schemas.common import PaginatedList
+
+    return PaginatedList[TenantPublic](
+        items=tenant_public_items, pagination=paginated_tenants.pagination
     )
 
 

@@ -1,8 +1,20 @@
 from datetime import datetime, timezone
 from typing import Optional
 from sqlmodel import SQLModel, Field
+from enum import Enum
 
 from gpustack.mixins.active_record import ActiveRecordMixin
+
+
+class LogTypeEnum(str, Enum):
+    """Log type enumeration."""
+
+    STORAGE = "storage"  # 存储子系统
+    NETWORK = "net"  # 网络子系统
+    DEVICE_DRIVER = "device_driver"  # 设备与驱动
+    MEMORY = "memory"  # 内存管理
+    KERNEL = "kernel"  # 内核故障
+    HARDWARE = "hardware"  # 硬件故障
 
 
 class WorkerLoad(SQLModel, ActiveRecordMixin, table=True):

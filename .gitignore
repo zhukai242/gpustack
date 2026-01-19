@@ -150,6 +150,7 @@ __pycache__/
 
 # vscode
 .vscode
+.trae
 
 # IDEA
 .idea

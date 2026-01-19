@@ -308,8 +308,9 @@ async def get_active_models(
 
     model_summary = []
     for result in results:
-        # We need to summarize the resource claims for all model instances including distributed servers.
-        # It's complicated to do this in a SQL statement, so we do it in Python.
+        # We need to summarize the resource claims for all model instances
+        # including distributed servers. It's complicated to do this in a SQL
+        # statement, so we do it in Python.
         resource_claim = ResourceClaim(
             ram=0,
             vram=0,
@@ -476,8 +477,9 @@ async def usage_stats(
 ):
     """
     Get model usage statistics.
-    This endpoint returns aggregated statistics for model usage, including token counts and request counts.
-    It can filter by date range, model IDs, and user IDs.
+    This endpoint returns aggregated statistics for model usage,
+    including token counts and request counts. It can filter by date
+    range, model IDs, and user IDs.
     """
     return await get_model_usage_stats(
         session,
@@ -659,4 +661,401 @@ async def gpu_load(
             gpu=gpu_history,
             vram=vram_history,
         ),
+    )
+
+
+async def _get_basic_stats(workers):
+    """
+    Calculate basic GPU and worker statistics from worker status.
+
+    Args:
+        workers: List of Worker objects
+
+    Returns:
+        Tuple containing gpu_total, total_memory, gpu_temperatures, abnormal_devices,
+        total_gpu_util, gpu_count_for_util
+    """
+    gpu_total = 0
+    total_memory = 0
+    gpu_temperatures = []
+    abnormal_devices = 0
+    total_gpu_util = 0.0
+    gpu_count_for_util = 0
+
+    for worker in workers:
+        # Get total memory from worker
+        if worker.status and worker.status.memory:
+            total_memory += worker.status.memory.total
+
+        # Process GPU devices
+        if worker.status and worker.status.gpu_devices:
+            for gpu in worker.status.gpu_devices:
+                gpu_total += 1
+
+                # Check for abnormal devices
+                if (
+                    (
+                        gpu.core
+                        and gpu.core.utilization_rate is not None
+                        and gpu.core.utilization_rate > 95
+                    )
+                    or (
+                        gpu.memory
+                        and gpu.memory.utilization_rate is not None
+                        and gpu.memory.utilization_rate > 95
+                    )
+                    or (gpu.temperature and gpu.temperature > 85)
+                ):
+                    abnormal_devices += 1
+
+                # Collect GPU utilization for overall utilization
+                if gpu.core and gpu.core.utilization_rate is not None:
+                    total_gpu_util += gpu.core.utilization_rate
+                    gpu_count_for_util += 1
+
+                # Collect GPU temperatures
+                if gpu.temperature is not None:
+                    gpu_temperatures.append(gpu.temperature)
+
+    return (
+        gpu_total,
+        total_memory,
+        gpu_temperatures,
+        abnormal_devices,
+        total_gpu_util,
+        gpu_count_for_util,
+    )
+
+
+async def _get_current_utilization(workers, total_gpu_util, gpu_count_for_util):
+    """
+    Calculate current GPU and VRAM utilization from worker status.
+
+    Args:
+        workers: List of Worker objects
+        total_gpu_util: Total GPU utilization from all workers
+        gpu_count_for_util: Number of GPUs with valid utilization data
+
+    Returns:
+        Tuple containing current_gpu_utilization, current_vram_utilization
+    """
+    total_vram_util = 0.0
+    vram_count_for_util = 0
+
+    for worker in workers:
+        if worker.status and worker.status.gpu_devices:
+            for gpu in worker.status.gpu_devices:
+                if gpu.memory and gpu.memory.utilization_rate is not None:
+                    total_vram_util += gpu.memory.utilization_rate
+                    vram_count_for_util += 1
+
+    # Calculate current utilization from worker status
+    current_gpu_utilization = (
+        total_gpu_util / gpu_count_for_util if gpu_count_for_util > 0 else 0.0
+    )
+    current_vram_utilization = (
+        total_vram_util / vram_count_for_util if vram_count_for_util > 0 else 0.0
+    )
+
+    return current_gpu_utilization, current_vram_utilization
+
+
+async def _calculate_gpu_monthly_change(session, workers, fields):
+    """
+    Calculate GPU count change month-over-month.
+
+    Args:
+        session: Database session
+        workers: List of current Worker objects
+        fields: Filter fields for workers
+
+    Returns:
+        GPU count change rate as percentage
+    """
+    # Calculate GPU change month-over-month
+    now = datetime.now(timezone.utc)
+    last_month_start = now - timedelta(days=30)
+
+    # Get workers created before last month
+    last_month_workers = await Worker.all_by_fields(
+        session, fields=fields, extra_conditions=[Worker.created_at < last_month_start]
+    )
+
+    # Calculate GPU count for last month
+    gpu_count_last_month = 0
+    for worker in last_month_workers:
+        if worker.status and worker.status.gpu_devices:
+            gpu_count_last_month += len(worker.status.gpu_devices)
+
+    # Calculate current GPU total
+    gpu_total = 0
+    for worker in workers:
+        if worker.status and worker.status.gpu_devices:
+            gpu_total += len(worker.status.gpu_devices)
+
+    # Calculate month-over-month growth rate (percentage)
+    if gpu_count_last_month == 0:
+        if gpu_total == 0:
+            # No change if both months have 0 GPUs
+            gpu_change_month = 0.0
+        else:
+            # If last month had 0 GPUs, growth rate is (current / 1) * 100% (e.g., 0→8 = 800%)
+            gpu_change_month = gpu_total * 100.0
+    else:
+        # Calculate growth rate as percentage change
+        gpu_change_month = (
+            (gpu_total - gpu_count_last_month) / gpu_count_last_month
+        ) * 100
+
+    # Round to one decimal place
+    return round(gpu_change_month, 1)
+
+
+async def _count_gpu_error_devices(session, workers):
+    """
+    Count GPU devices with error logs and compare with yesterday.
+
+    Args:
+        session: Database session
+        workers: List of Worker objects
+
+    Returns:
+        Tuple containing:
+        - gpu_error_device_count: Number of GPU devices with error logs today
+        - gpu_error_device_change_day: Change in error devices from yesterday
+    """
+    from gpustack.schemas.load import GPULog
+
+    # Get current time and calculate 24-hour periods
+    now = datetime.now(timezone.utc)
+
+    # Calculate today's period (last 24 hours from now)
+    today_start = now - timedelta(days=1)
+    today_end = now
+
+    # Calculate yesterday's period (24-48 hours ago from now)
+    yesterday_start = now - timedelta(days=2)
+    yesterday_end = now - timedelta(days=1)
+
+    # Convert to timestamps for query
+    today_start_ts = int(today_start.timestamp())
+    today_end_ts = int(today_end.timestamp())
+    yesterday_start_ts = int(yesterday_start.timestamp())
+    yesterday_end_ts = int(yesterday_end.timestamp())
+
+    # Get worker IDs for filtering
+    worker_ids = [worker.id for worker in workers] if workers else []
+
+    # Count unique GPU IDs with error logs today
+    today_error_gpu_ids = set()
+    if worker_ids:
+        today_statement = (
+            select(GPULog.gpu_id)
+            .where(GPULog.worker_id.in_(worker_ids))
+            .where(GPULog.timestamp >= today_start_ts)
+            .where(GPULog.timestamp <= today_end_ts)
+            .where(GPULog.severity == "error")
+        )
+        today_error_gpus = (await session.exec(today_statement)).all()
+        today_error_gpu_ids = set(today_error_gpus)
+
+    # Count unique GPU IDs with error logs yesterday
+    yesterday_error_gpu_ids = set()
+    if worker_ids:
+        yesterday_statement = (
+            select(GPULog.gpu_id)
+            .where(GPULog.worker_id.in_(worker_ids))
+            .where(GPULog.timestamp >= yesterday_start_ts)
+            .where(GPULog.timestamp <= yesterday_end_ts)
+            .where(GPULog.severity == "error")
+        )
+        yesterday_error_gpus = (await session.exec(yesterday_statement)).all()
+        yesterday_error_gpu_ids = set(yesterday_error_gpus)
+
+    # Calculate counts
+    today_count = len(today_error_gpu_ids)
+    yesterday_count = len(yesterday_error_gpu_ids)
+
+    # Calculate change from yesterday
+    change_day = today_count - yesterday_count
+
+    return today_count, change_day
+
+
+async def _calculate_utilization_changes(session, workers):
+    """
+    Calculate day-over-day utilization changes from worker_loads table.
+
+    Args:
+        session: Database session
+        workers: List of Worker objects
+
+    Returns:
+        Tuple containing gpu_utilization_change_day, vram_utilization_change_day
+    """
+    # Get current time and calculate 24-hour periods
+    now = datetime.now(timezone.utc)
+
+    # Calculate today's period (last 24 hours from now)
+    today_start = now - timedelta(days=1)
+    today_end = now
+
+    # Calculate yesterday's period (24-48 hours ago from now)
+    yesterday_start = now - timedelta(days=2)
+    yesterday_end = now - timedelta(days=1)
+
+    # Convert to timestamps for query
+    today_start_ts = int(today_start.timestamp())
+    today_end_ts = int(today_end.timestamp())
+    yesterday_start_ts = int(yesterday_start.timestamp())
+    yesterday_end_ts = int(yesterday_end.timestamp())
+
+    # Get worker IDs for filtering
+    worker_ids = [worker.id for worker in workers] if workers else []
+
+    # Query today's worker loads
+    today_worker_loads = []
+    if worker_ids:
+        today_statement = (
+            select(WorkerLoad)
+            .where(WorkerLoad.worker_id.in_(worker_ids))
+            .where(WorkerLoad.timestamp >= today_start_ts)
+            .where(WorkerLoad.timestamp <= today_end_ts)
+        )
+        today_worker_loads = (await session.exec(today_statement)).all()
+
+    # Query yesterday's worker loads
+    yesterday_worker_loads = []
+    if worker_ids:
+        yesterday_statement = (
+            select(WorkerLoad)
+            .where(WorkerLoad.worker_id.in_(worker_ids))
+            .where(WorkerLoad.timestamp >= yesterday_start_ts)
+            .where(WorkerLoad.timestamp <= yesterday_end_ts)
+        )
+        yesterday_worker_loads = (await session.exec(yesterday_statement)).all()
+
+    # Calculate average GPU/VRAM utilization for today
+    today_avg_gpu = 0.0
+    today_avg_vram = 0.0
+    if today_worker_loads:
+        today_gpu_sum = sum(load.gpu or 0 for load in today_worker_loads)
+        today_vram_sum = sum(load.vram or 0 for load in today_worker_loads)
+        today_avg_gpu = today_gpu_sum / len(today_worker_loads)
+        today_avg_vram = today_vram_sum / len(today_worker_loads)
+
+    # Calculate average GPU/VRAM utilization for yesterday
+    yesterday_avg_gpu = 0.0
+    yesterday_avg_vram = 0.0
+    if yesterday_worker_loads:
+        yesterday_gpu_sum = sum(load.gpu or 0 for load in yesterday_worker_loads)
+        yesterday_vram_sum = sum(load.vram or 0 for load in yesterday_worker_loads)
+        yesterday_avg_gpu = yesterday_gpu_sum / len(yesterday_worker_loads)
+        yesterday_avg_vram = yesterday_vram_sum / len(yesterday_worker_loads)
+
+    # Calculate day-over-day change rates (percentage)
+    def calculate_change_rate(today_val, yesterday_val):
+        """Calculate percentage change between today and yesterday values."""
+        if yesterday_val == 0:
+            if today_val == 0:
+                # No change if both values are 0
+                return 0.0
+            else:
+                # If yesterday was 0, change rate is (today / 1) * 100%
+                return today_val * 100.0
+        else:
+            # Standard percentage change calculation
+            return ((today_val - yesterday_val) / yesterday_val) * 100.0
+
+    # Calculate utilization changes
+    gpu_utilization_change_day = calculate_change_rate(today_avg_gpu, yesterday_avg_gpu)
+    vram_utilization_change_day = calculate_change_rate(
+        today_avg_vram, yesterday_avg_vram
+    )
+
+    return gpu_utilization_change_day, vram_utilization_change_day
+
+
+@router.get("/real-time-stats")
+async def real_time_stats(
+    session: SessionDep,
+    cluster_id: Optional[int] = None,
+):
+    """
+    Get real-time statistics summary.
+    This endpoint returns comprehensive real-time statistics including:
+    - GPU count with month-over-month change
+    - GPU utilization with day-over-day change
+    - VRAM utilization with day-over-day change
+    - GPU health with error log trends
+    - Abnormal device count
+    - Total memory
+    - Average GPU temperature
+    """
+    from gpustack.schemas.dashboard import RealTimeStats
+
+    # Get all workers
+    fields = {"cluster_id": cluster_id} if cluster_id else {}
+    workers = await Worker.all_by_fields(session, fields=fields)
+
+    # Calculate basic stats
+    (
+        gpu_total,
+        total_memory,
+        gpu_temperatures,
+        abnormal_devices,
+        total_gpu_util,
+        gpu_count_for_util,
+    ) = await _get_basic_stats(workers)
+
+    # Calculate current utilization
+    current_gpu_utilization, current_vram_utilization = await _get_current_utilization(
+        workers, total_gpu_util, gpu_count_for_util
+    )
+
+    # Calculate average GPU temperature
+    avg_gpu_temperature = (
+        sum(gpu_temperatures) / len(gpu_temperatures) if gpu_temperatures else 0.0
+    )
+
+    # Calculate GPU change month-over-month
+    gpu_change_month = await _calculate_gpu_monthly_change(session, workers, fields)
+
+    # Calculate utilization changes day-over-day
+    gpu_utilization_change_day, vram_utilization_change_day = (
+        await _calculate_utilization_changes(session, workers)
+    )
+
+    # Count GPU error devices and compare with yesterday
+    gpu_error_device_count, gpu_error_device_change_day = (
+        await _count_gpu_error_devices(session, workers)
+    )
+
+    # Calculate GPU health (placeholder logic: higher is better)
+    gpu_health = (
+        100.0 - (abnormal_devices / gpu_total * 100) if gpu_total > 0 else 100.0
+    )
+
+    # Placeholder for other changes
+    health_change_day = 0.0  # Would compare error logs with yesterday
+    abnormal_device_change_day = 0  # Would compare with yesterday
+
+    # Create response
+    return RealTimeStats(
+        gpu_total=gpu_total,
+        gpu_change_month=gpu_change_month,
+        gpu_utilization=round(current_gpu_utilization, 1),
+        gpu_utilization_change_day=round(gpu_utilization_change_day, 1),
+        vram_utilization=round(current_vram_utilization, 1),
+        vram_utilization_change_day=round(vram_utilization_change_day, 1),
+        gpu_health=round(gpu_health, 1),
+        health_change_day=health_change_day,
+        abnormal_device_count=abnormal_devices,
+        abnormal_device_change_day=abnormal_device_change_day,
+        total_memory=total_memory,
+        avg_gpu_temperature=round(avg_gpu_temperature, 1),
+        gpu_error_device_count=gpu_error_device_count,
+        gpu_error_device_change_day=gpu_error_device_change_day,
+        task_count=0,  # Placeholder value as requested
+        avg_network_latency=0.0,  # Placeholder value as requested
     )
