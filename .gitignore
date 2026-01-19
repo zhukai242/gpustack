@@ -165,3 +165,6 @@ __pycache__/
 
 # kubernetes config
 kubeconfig
+
+# Others
+.claude

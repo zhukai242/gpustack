@@ -238,13 +238,18 @@ def update_worker_data(
 ) -> Worker:
     to_create_worker = None
     if existing is not None:
-        # Get worker_in data and exclude rack_id to preserve existing value
-        worker_in_data = worker_in.model_dump()
+        # Preserve maintenance field from existing worker if not explicitly set in worker_in
+        incoming_data = worker_in.model_dump()
+        if (
+            incoming_data.get("maintenance") is None
+            and existing.maintenance is not None
+        ):
+            incoming_data["maintenance"] = existing.maintenance
 
         to_create_worker = Worker.model_validate(
             {
                 **existing.model_dump(),
-                **worker_in_data,
+                **incoming_data,
                 "labels": {
                     **existing.labels,
                     **worker_in.labels,
