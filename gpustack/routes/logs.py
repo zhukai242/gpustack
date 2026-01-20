@@ -1,6 +1,7 @@
 from typing import List, Optional, Dict
 from fastapi import APIRouter, Query, Body
-from sqlalchemy import select, func, and_, text, literal_column
+from sqlalchemy import func, and_, text, literal_column
+from sqlmodel import select
 from gpustack.server.deps import SessionDep, CurrentUserDep
 from gpustack.schemas.load import WorkerLog, GPULog, LogTypeEnum
 from gpustack.schemas.workers import Worker
@@ -16,10 +17,11 @@ router = APIRouter(prefix="/logs", tags=["logs"])
 
 
 class LogUpdate(BaseModel):
-    """Log update model for processor and comment."""
+    """Log update model for processor, comment, and status."""
 
     processor: Optional[str] = None
     comment: Optional[str] = None
+    status: Optional[str] = None
 
 
 class LogTypeCount(BaseModel):
@@ -56,6 +58,7 @@ class ExceptionLog(BaseModel):
     processor: Optional[str] = None  # Processor
     comment: Optional[str] = None  # Comment
     log_source: str  # Source of the log: "worker" or "gpu"
+    status: Optional[str] = None  # Log status
 
 
 class ExceptionLogList(BaseModel):
@@ -195,7 +198,7 @@ async def update_worker_log(
     """
     Update a worker log's processor and comment.
     """
-    # Get the log
+    # Get the log first to verify it exists
     statement = select(WorkerLog).where(WorkerLog.id == log_id)
     result = await session.exec(statement)
     log = result.first()
@@ -203,15 +206,28 @@ async def update_worker_log(
     if not log:
         raise NotFoundException(f"Worker log with ID {log_id} not found")
 
-    # Update the log
+    # Prepare update data
     update_data = log_update.model_dump(exclude_unset=True)
-    for key, value in update_data.items():
-        setattr(log, key, value)
+    if not update_data:
+        # Ensure we return a single object, not a tuple
+        if isinstance(log, tuple):
+            log = log[0]
+        return log
 
-    # Save the changes
-    await log.save(session)
+    # Update the fields using SQLAlchemy's update statement
+    from sqlmodel import update
 
-    return log
+    stmt = update(WorkerLog).where(WorkerLog.id == log_id).values(**update_data)
+    await session.exec(stmt)
+    await session.commit()
+
+    # Get the updated log object
+    result = await session.exec(select(WorkerLog).where(WorkerLog.id == log_id))
+    updated_log = result.first()
+    # Ensure we return a single object, not a tuple
+    if isinstance(updated_log, tuple):
+        updated_log = updated_log[0]
+    return updated_log
 
 
 @router.put("/gpu/{log_id}", response_model=GPULog)
@@ -224,7 +240,7 @@ async def update_gpu_log(
     """
     Update a GPU log's processor and comment.
     """
-    # Get the log
+    # Get the log first to verify it exists
     statement = select(GPULog).where(GPULog.id == log_id)
     result = await session.exec(statement)
     log = result.first()
@@ -232,15 +248,28 @@ async def update_gpu_log(
     if not log:
         raise NotFoundException(f"GPU log with ID {log_id} not found")
 
-    # Update the log
+    # Prepare update data
     update_data = log_update.model_dump(exclude_unset=True)
-    for key, value in update_data.items():
-        setattr(log, key, value)
+    if not update_data:
+        # Ensure we return a single object, not a tuple
+        if isinstance(log, tuple):
+            log = log[0]
+        return log
 
-    # Save the changes
-    await log.save(session)
+    # Update the fields using SQLAlchemy's update statement
+    from sqlmodel import update
 
-    return log
+    stmt = update(GPULog).where(GPULog.id == log_id).values(**update_data)
+    await session.exec(stmt)
+    await session.commit()
+
+    # Get the updated log object
+    result = await session.exec(select(GPULog).where(GPULog.id == log_id))
+    updated_log = result.first()
+    # Ensure we return a single object, not a tuple
+    if isinstance(updated_log, tuple):
+        updated_log = updated_log[0]
+    return updated_log
 
 
 @router.get("/daily-stats", response_model=DailyLogStats)
@@ -489,6 +518,7 @@ async def get_exception_logs(
             literal_column("'worker'").label('log_source'),
             # Use CAST to ensure consistent type with GPU logs
             literal_column("CAST(NULL AS VARCHAR)").label('gpu_name'),
+            WorkerLog.status,
         )
         .join(Worker, Worker.id == WorkerLog.worker_id)
         .where(WorkerLog.severity.in_(['warning', 'error']))
@@ -509,6 +539,7 @@ async def get_exception_logs(
             literal_column("'gpu'").label('log_source'),
             # Use GPU ID as gpu_name
             GPULog.gpu_id.label('gpu_name'),
+            GPULog.status,
         )
         .join(Worker, Worker.id == GPULog.worker_id)
         .where(GPULog.severity.in_(['warning', 'error']))
@@ -562,19 +593,20 @@ async def get_exception_logs(
     # Calculate total pages
     total_pages = (total_count + per_page - 1) // per_page
 
-    # Format results
+    # Format results - use index access for tuple results
     exception_logs = [
         ExceptionLog(
-            log_id=log.log_id,
-            log_type=log.log_type,
-            severity=log.severity,
-            log_content=log.log_content,
-            timestamp=log.timestamp,
-            worker_name=log.worker_name,
-            gpu_name=log.gpu_name,
-            processor=log.processor,
-            comment=log.comment,
-            log_source=log.log_source,
+            log_id=log[0],  # log_id
+            log_type=log[1],  # log_type
+            severity=log[2],  # severity
+            log_content=log[3],  # log_content
+            timestamp=log[4],  # timestamp
+            worker_name=log[5],  # worker_name
+            gpu_name=log[9],  # gpu_name (position 9 in the select)
+            processor=log[6],  # processor
+            comment=log[7],  # comment
+            log_source=log[8],  # log_source
+            status=log[10],  # status (position 10 in the select)
         )
         for log in logs
     ]
@@ -628,11 +660,14 @@ async def update_exception_log(
 
     # Update the log with processor and comment
     update_data = log_update.model_dump(exclude_unset=True)
-    for key, value in update_data.items():
-        setattr(log, key, value)
+    if update_data:
+        # Use SQL UPDATE statement to update the record
+        from sqlmodel import update
 
-    # Save the changes
-    await log.save(session)
+        stmt = update(log_model).where(log_model.id == log_id).values(**update_data)
+        await session.exec(stmt)
+        await session.commit()
+        await session.refresh(log)
 
     return {
         "message": f"{log_source.capitalize()} log updated successfully",

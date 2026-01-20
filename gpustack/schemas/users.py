@@ -63,6 +63,11 @@ class UserBase(SQLModel):
         default=None,
         sa_column=Column(Integer, ForeignKey("clusters.id", ondelete="CASCADE")),
     )
+    tenant_id: Optional[int] = Field(
+        default=None,
+        sa_column=Column(Integer, ForeignKey("tenants.id", ondelete="CASCADE")),
+        description="Tenant ID for tenant admin users",
+    )
     worker_id: Optional[int] = Field(
         default=None,
         sa_column=Column(Integer, ForeignKey("workers.id", ondelete="CASCADE")),
@@ -147,6 +152,10 @@ class User(UserBase, BaseModelMixin, table=True):
     models: List["Model"] = Relationship(
         back_populates="users",
         link_model=ModelUserLink,
+        sa_relationship_kwargs={"lazy": "selectin"},
+    )
+    user_groups: List["UserGroupMember"] = Relationship(  # type: ignore # noqa: F821
+        back_populates="user",
         sa_relationship_kwargs={"lazy": "selectin"},
     )
 

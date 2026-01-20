@@ -74,7 +74,18 @@ def send_post_commit_events(session: AsyncSession):
         try:
             copied_dict = bus_event.data.model_dump(warnings=False)
             bus_event.data = type(bus_event.data).model_validate(copied_dict)
-            asyncio.create_task(event_bus.publish(event.name, bus_event))
+
+            # 使用try-except块捕获可能的错误
+            try:
+                # 检查是否有正在运行的事件循环
+                loop = asyncio.get_running_loop()
+                # 如果有运行中的事件循环，使用create_task
+                loop.create_task(event_bus.publish(event.name, bus_event))
+            except RuntimeError:
+                # 如果没有运行中的事件循环，跳过执行，避免greenlet_spawn错误
+                logger.warning(
+                    f"No running event loop found, skipping event publishing for {event.name}"
+                )
         except Exception as e:
             logger.exception(f"Failed to publish events: {e}")
 
@@ -128,7 +139,12 @@ class ActiveRecordMixin:
 
         statement = select(cls)
         for key, value in fields.items():
-            statement = statement.where(getattr(cls, key) == value)
+            if isinstance(value, list):
+                # 使用 IN 操作符处理列表值
+                statement = statement.where(getattr(cls, key).in_(value))
+            else:
+                # 使用 == 操作符处理单个值
+                statement = statement.where(getattr(cls, key) == value)
 
         result = await session.exec(statement)
         return result.first()
@@ -139,7 +155,12 @@ class ActiveRecordMixin:
 
         statement = select(cls)
         for key, value in fields.items():
-            statement = statement.where(getattr(cls, key) == value)
+            if isinstance(value, list):
+                # 使用 IN 操作符处理列表值
+                statement = statement.where(getattr(cls, key).in_(value))
+            else:
+                # 使用 == 操作符处理单个值
+                statement = statement.where(getattr(cls, key) == value)
 
         result = await session.exec(statement)
         return result.first()
@@ -174,7 +195,12 @@ class ActiveRecordMixin:
 
         statement = select(cls)
         for key, value in fields.items():
-            statement = statement.where(getattr(cls, key) == value)
+            if isinstance(value, list):
+                # 使用 IN 操作符处理列表值
+                statement = statement.where(getattr(cls, key).in_(value))
+            else:
+                # 使用 == 操作符处理单个值
+                statement = statement.where(getattr(cls, key) == value)
 
         if fuzzy_fields:
             fuzzy_conditions = [

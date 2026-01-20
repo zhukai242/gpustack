@@ -2,10 +2,11 @@ from datetime import datetime
 from enum import Enum
 from typing import Optional, List, TYPE_CHECKING
 from sqlmodel import SQLModel, Field, Column, ForeignKey, Relationship
-from sqlalchemy import Integer
+from sqlalchemy import Integer, String
 
 from gpustack.mixins import BaseModelMixin
 from gpustack.schemas.common import UTCDateTime, ListParams, PaginatedList
+
 
 # Type imports for relationships
 if TYPE_CHECKING:
@@ -24,6 +25,43 @@ class LicenseStatusEnum(str, Enum):
     SUSPENDED = "suspended"  # 暂停
     PENDING = "pending"  # 待激活
 
+    @classmethod
+    def _missing_(cls, value):
+        """
+        当枚举值不存在时，尝试从字符串值中查找匹配项
+        解决数据库中存储小写值无法转换为枚举的问题
+        """
+        for member in cls:
+            if member.value == value:
+                return member
+        return None
+
+
+class LicenseOperationTypeEnum(str, Enum):
+    """
+    License操作类型枚举
+    """
+
+    CREATE = "create"  # 创建
+    ACTIVATE = "activate"  # 激活
+    REVOKE = "revoke"  # 吊销
+    RENEW = "renew"  # 续期
+    SUSPEND = "suspend"  # 暂停
+    RESUME = "resume"  # 恢复
+    UPDATE = "update"  # 更新
+    DELETE = "delete"  # 删除
+
+    @classmethod
+    def _missing_(cls, value):
+        """
+        当枚举值不存在时，尝试从字符串值中查找匹配项
+        解决数据库中存储小写值无法转换为枚举的问题
+        """
+        for member in cls:
+            if member.value == value:
+                return member
+        return None
+
 
 class LicenseTypeEnum(str, Enum):
     """
@@ -35,6 +73,17 @@ class LicenseTypeEnum(str, Enum):
     STANDARD = "standard"  # 标准版
     PROFESSIONAL = "professional"  # 专业版
 
+    @classmethod
+    def _missing_(cls, value):
+        """
+        当枚举值不存在时，尝试从字符串值中查找匹配项
+        解决数据库中存储小写值无法转换为枚举的问题
+        """
+        for member in cls:
+            if member.value == value:
+                return member
+        return None
+
 
 class LicenseBase(SQLModel):
     """
@@ -44,16 +93,20 @@ class LicenseBase(SQLModel):
     license_id: str = Field(..., index=True, unique=True, description="License ID")
     license_code: str = Field(..., index=True, unique=True, description="License代码")
     license_type: LicenseTypeEnum = Field(
-        default=LicenseTypeEnum.STANDARD, description="License类型"
+        default=LicenseTypeEnum.STANDARD,
+        description="License类型",
+        sa_column=Column(String),
     )
     status: LicenseStatusEnum = Field(
-        default=LicenseStatusEnum.PENDING, description="License状态"
+        default=LicenseStatusEnum.PENDING,
+        description="License状态",
+        sa_column=Column(String),
     )
     activation_time: Optional[datetime] = Field(
-        sa_column=Column(UTCDateTime), description="激活时间"
+        sa_column=Column(UTCDateTime), default=None, description="激活时间"
     )
     expiration_time: Optional[datetime] = Field(
-        sa_column=Column(UTCDateTime), description="到期时间"
+        sa_column=Column(UTCDateTime), default=None, description="到期时间"
     )
     issued_time: datetime = Field(
         sa_column=Column(UTCDateTime),
@@ -66,6 +119,7 @@ class LicenseBase(SQLModel):
         sa_column=Column(
             Integer, ForeignKey("clusters.id", ondelete="SET NULL"), nullable=True
         ),
+        default=None,
         description="集群ID",
     )
     description: Optional[str] = Field(default=None, description="描述")
@@ -103,6 +157,9 @@ class License(LicenseBase, BaseModelMixin, table=True):
     license_activations: List["LicenseActivation"] = Relationship(
         back_populates="license"
     )
+    license_operations: List["LicenseOperation"] = Relationship(
+        back_populates="license"
+    )
 
 
 class LicensePublic(LicenseBase):
@@ -137,7 +194,9 @@ class LicenseActivationBase(SQLModel):
     gpu_sn: str = Field(..., index=True, description="GPU序列号")
     gpu_model: Optional[str] = Field(default=None, description="GPU型号")
     status: LicenseStatusEnum = Field(
-        default=LicenseStatusEnum.ACTIVE, description="激活状态"
+        default=LicenseStatusEnum.ACTIVE,
+        description="激活状态",
+        sa_column=Column(String),
     )
     activation_time: datetime = Field(
         sa_column=Column(UTCDateTime),
@@ -189,6 +248,80 @@ class LicenseActivation(LicenseActivationBase, BaseModelMixin, table=True):
 class LicenseActivationPublic(LicenseActivationBase):
     """
     License激活公开模型
+    """
+
+    id: int
+    created_at: datetime
+    updated_at: datetime
+    deleted_at: Optional[datetime] = None
+
+
+class BatchLicenseActivationRequest(SQLModel):
+    """
+    批量激活请求模型
+    """
+
+    activation_code: list[str] = Field(..., description="激活码列表")
+    worker_id: int = Field(..., description="节点ID")
+
+
+class BatchLicenseRenewalRequest(SQLModel):
+    """
+    批量续期请求模型
+    """
+
+    activation_code: list[str] = Field(..., description="激活码列表")
+    worker_id: int = Field(..., description="节点ID")
+
+
+class LicenseOperationBase(SQLModel):
+    """
+    License操作记录基础模型
+    """
+
+    license_id: int = Field(
+        sa_column=Column(
+            Integer, ForeignKey("licenses.id", ondelete="SET NULL"), nullable=True
+        ),
+        description="License ID",
+    )
+    operation_type: LicenseOperationTypeEnum = Field(
+        ..., description="操作类型", sa_column=Column(String)
+    )
+    operator: str = Field(default="system", description="操作人")
+    operation_time: datetime = Field(
+        sa_column=Column(UTCDateTime),
+        default_factory=datetime.utcnow,
+        description="操作时间",
+    )
+    old_value: Optional[str] = Field(default=None, description="操作前的值（JSON格式）")
+    new_value: Optional[str] = Field(default=None, description="操作后的值（JSON格式）")
+    description: Optional[str] = Field(default=None, description="操作描述")
+
+
+class LicenseOperationCreate(LicenseOperationBase):
+    """
+    License操作记录创建模型
+    """
+
+    pass
+
+
+class LicenseOperation(LicenseOperationBase, BaseModelMixin, table=True):
+    """
+    License操作记录数据库模型
+    """
+
+    __tablename__ = "license_operations"
+    id: Optional[int] = Field(default=None, primary_key=True)
+
+    # 关系
+    license: Optional["License"] = Relationship(back_populates="license_operations")
+
+
+class LicenseOperationPublic(LicenseOperationBase):
+    """
+    License操作记录公开模型
     """
 
     id: int

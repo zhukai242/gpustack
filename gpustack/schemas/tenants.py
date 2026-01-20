@@ -101,6 +101,11 @@ class Tenant(TenantBase, BaseModelMixin, table=True):
         back_populates="tenant",
         cascade_delete=True,
     )
+    user_groups: List["UserGroup"] = Relationship(  # type: ignore # noqa: F821
+        sa_relationship_kwargs={"lazy": "selectin"},
+        back_populates="tenant",
+        cascade_delete=True,
+    )
 
 
 class TenantListParams(ListParams):
@@ -235,6 +240,11 @@ class TenantResource(TenantResourceBase, BaseModelMixin, table=True):
     tenant: Tenant = Relationship(
         sa_relationship_kwargs={"lazy": "selectin"},
         back_populates="tenant_resources",
+    )
+    user_group_resources: List["UserGroupResource"] = Relationship(  # type: ignore # noqa: F821
+        sa_relationship_kwargs={"lazy": "selectin"},
+        back_populates="tenant_resource",
+        cascade_delete=True,
     )
 
 
@@ -467,3 +477,28 @@ class TenantResourceUtilizationList(BaseModel):
     """List of tenant resource utilizations for star chart."""
 
     items: List[TenantResourceUtilization] = Field(default_factory=list)
+
+
+class TenantResourceCounts(BaseModel):
+    """Tenant resource counts."""
+
+    gpu_total: int = Field(..., description="GPU总个数")
+    gpu_used: int = Field(..., description="GPU当前已经使用量")
+    gpu_utilization: float = Field(..., description="GPU当前使用率")
+    vram_total: int = Field(..., description="显存总量")
+    vram_used: int = Field(..., description="显存当前已经使用量")
+    vram_utilization: float = Field(..., description="显存当前使用率")
+
+
+class TenantSystemLoad(BaseModel):
+    """Tenant system load summary."""
+
+    current: Optional[Dict[str, Any]] = Field(None, description="当前系统负载")
+    history: Optional[Dict[str, Any]] = Field(None, description="历史系统负载")
+
+
+class TenantResourceStats(BaseModel):
+    """Tenant resource statistics."""
+
+    resource_counts: TenantResourceCounts = Field(..., description="资源统计")
+    system_load: TenantSystemLoad = Field(..., description="系统负载")

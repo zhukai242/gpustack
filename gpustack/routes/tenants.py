@@ -634,6 +634,24 @@ async def create_tenant(tenant_create: TenantCreateWithResources, session: Sessi
             )
         )
 
+    # 创建用户
+    from gpustack.schemas.users import User
+    from gpustack.security import get_secret_hash
+
+    # 检查是否已经存在该用户
+    existing_user = await User.one_by_field(session, "username", tenant.contact_email)
+    if not existing_user:
+        # 创建租户管理员账号
+        user = User(
+            username=tenant.contact_email,
+            full_name=tenant.contact_person,
+            is_admin=True,
+            is_active=True,
+            hashed_password=get_secret_hash(tenant.contact_email),
+            tenant_id=tenant.id,
+        )
+        session.add(user)
+
     # Commit the transaction first
     await session.commit()
 

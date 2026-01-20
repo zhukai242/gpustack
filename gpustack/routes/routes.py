@@ -32,6 +32,7 @@ from gpustack.routes import (
     worker_pools,
     clusters,
     token,
+    user_groups,
 )
 
 from gpustack.api.exceptions import error_responses, openai_api_error_responses
@@ -161,6 +162,11 @@ admin_routers = model_routers + [
         "router": tenant_resources.router,
         "prefix": "/tenant-resources",
         "tags": ["Tenant Resources"],
+    },
+    {
+        "router": user_groups.router,
+        "prefix": "/user-groups",
+        "tags": ["User Groups"],
     },
 ]
 

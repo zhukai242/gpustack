@@ -7,7 +7,7 @@ from gpustack.api.exceptions import (
     NotFoundException,
     BadRequestException,
 )
-from gpustack.server.deps import SessionDep, EngineDep, get_admin_user
+from gpustack.server.deps import SessionDep, EngineDep, get_admin_user, CurrentUserDep
 from gpustack.schemas.tenants import (
     TenantResourceCreate,
     TenantResourceUpdate,
@@ -309,7 +309,7 @@ async def get_top_tenant_utilization(session: SessionDep):
 
 @router.get("/all-utilization", response_model=TenantResourceUtilizationList)
 async def get_all_tenant_utilization(session: SessionDep):
-    """Get all tenants with current GPU and VRAM utilization metrics for star chart comparison."""
+    """Get all tenants with current GPU and VRAM utilization metrics."""
     # Step 1: Get all active tenants
     stmt_tenants = select(Tenant).where(Tenant.deleted_at.is_(None))
     tenants_result = await session.exec(stmt_tenants)
@@ -444,6 +444,199 @@ async def get_all_tenant_utilization(session: SessionDep):
         utilization_list.append(utilization)
 
     return TenantResourceUtilizationList(items=utilization_list)
+
+
+async def _get_tenant_resources(session, tenant_id):
+    """
+    Get all resources for a tenant.
+    """
+    return await TenantResource.all_by_fields(
+        session, fields={"tenant_id": tenant_id, "deleted_at": None}
+    )
+
+
+async def _get_workers_for_tenant(session, worker_ids):
+    """
+    Get all workers for a tenant based on worker IDs.
+    """
+    if not worker_ids:
+        return []
+    from gpustack.schemas import Worker
+
+    return await Worker.all_by_fields(
+        session, fields={"id": worker_ids, "deleted_at": None}
+    )
+
+
+async def _calculate_current_utilization(resources, workers):
+    """
+    Calculate current GPU and VRAM utilization for a tenant.
+    """
+    gpu_util = 0.0
+    gpu_count = 0
+    vram_total = 0
+    vram_used = 0
+
+    for worker in workers:
+        if worker.status and worker.status.gpu_devices:
+            for gpu in worker.status.gpu_devices:
+                # Check if GPU is assigned to tenant
+                if any(
+                    r.gpu_id and r.gpu_id.endswith(f":{gpu.index}") for r in resources
+                ):
+                    if gpu.core and gpu.core.utilization_rate is not None:
+                        gpu_util += gpu.core.utilization_rate
+                        gpu_count += 1
+                    if gpu.memory:
+                        vram_total += gpu.memory.total
+                        if gpu.memory.utilization_rate is not None:
+                            vram_used += gpu.memory.total * (
+                                gpu.memory.utilization_rate / 100
+                            )
+
+    gpu_utilization = gpu_util / gpu_count if gpu_count > 0 else 0.0
+    vram_utilization = vram_used / vram_total * 100 if vram_total > 0 else 0.0
+
+    return gpu_utilization, vram_total, vram_used, vram_utilization
+
+
+async def _get_historical_load(session, gpu_ids, time_dimension):
+    """
+    Get historical GPU and VRAM load data based on time dimension.
+    """
+    from datetime import datetime, timedelta, timezone
+    from sqlalchemy import text
+    from gpustack.schemas.dashboard import TimeSeriesData
+
+    now = datetime.now(timezone.utc)
+    if time_dimension == "today":
+        start_time = now - timedelta(days=1)
+    elif time_dimension == "week":
+        start_time = now - timedelta(days=7)
+    elif time_dimension == "month":
+        start_time = now - timedelta(days=30)
+    else:
+        start_time = now - timedelta(days=1)
+
+    gpu_history = []
+    vram_history = []
+
+    if gpu_ids:
+        # Convert start_time to Unix timestamp for comparison with GPULoad.timestamp (integer)
+        start_timestamp = int(start_time.timestamp())
+
+        stmt = text(
+            """
+        SELECT
+            gpu_id,
+            date_trunc('hour', to_timestamp(timestamp)) AS hour,
+            AVG(gpu_utilization) AS avg_gpu,
+            AVG(vram_utilization) AS avg_vram
+        FROM gpu_loads
+        WHERE
+            gpu_id = ANY(:gpu_ids) AND
+            timestamp >= :start_timestamp
+        GROUP BY
+            gpu_id,
+            date_trunc('hour', to_timestamp(timestamp))
+        ORDER BY
+            date_trunc('hour', to_timestamp(timestamp))
+        """
+        )
+
+        # Use text() query with explicit parameters to avoid ORM issues
+        results = await session.exec(
+            stmt, params={"gpu_ids": gpu_ids, "start_timestamp": start_timestamp}
+        )
+
+        # Aggregate by hour across all GPUs
+        hourly_data = {}
+        for result in results:
+            hour_key = result.hour
+            if hour_key not in hourly_data:
+                hourly_data[hour_key] = {"gpu_sum": 0, "vram_sum": 0, "count": 0}
+
+            if result.avg_gpu is not None:
+                hourly_data[hour_key]["gpu_sum"] += result.avg_gpu
+            if result.avg_vram is not None:
+                hourly_data[hour_key]["vram_sum"] += result.avg_vram
+            hourly_data[hour_key]["count"] += 1
+
+        # Create time series data
+        for hour, data in sorted(hourly_data.items()):
+            if data["count"] > 0:
+                gpu_history.append(
+                    TimeSeriesData(
+                        timestamp=int(hour.timestamp()),
+                        value=data["gpu_sum"] / data["count"],
+                    )
+                )
+                vram_history.append(
+                    TimeSeriesData(
+                        timestamp=int(hour.timestamp()),
+                        value=data["vram_sum"] / data["count"],
+                    )
+                )
+
+    return gpu_history, vram_history
+
+
+@router.get("/stats")
+async def get_tenant_resource_stats(
+    session: SessionDep,
+    current_user: CurrentUserDep,
+    tenant_id: Optional[int] = None,
+    time_dimension: Optional[str] = "today",  # today, week, month
+):
+    """
+    Get tenant resource statistics and system load.
+    """
+    from gpustack.schemas.tenants import (
+        TenantResourceStats,
+        TenantResourceCounts,
+        TenantSystemLoad,
+    )
+
+    # Step 1: Get all resources for the tenant
+    if not tenant_id:
+        tenant_id = current_user.tenant_id
+    resources = await _get_tenant_resources(session, tenant_id)
+
+    # Get all GPU IDs and worker IDs for this tenant
+    gpu_ids = [r.gpu_id for r in resources if r.gpu_id]
+    worker_ids = [r.worker_id for r in resources]
+
+    # Step 2: Get workers and calculate utilization
+    workers = await _get_workers_for_tenant(session, worker_ids)
+    util_results = await _calculate_current_utilization(resources, workers)
+    gpu_utilization, vram_total, vram_used, vram_utilization = util_results
+
+    # Step 3: Get historical system load
+    gpu_history, vram_history = await _get_historical_load(
+        session, gpu_ids, time_dimension
+    )
+
+    # Step 4: Prepare resource counts
+    resource_counts = TenantResourceCounts(
+        gpu_total=len(resources),
+        gpu_used=len(resources),
+        gpu_utilization=gpu_utilization,
+        vram_total=vram_total,
+        vram_used=int(vram_used),
+        vram_utilization=vram_utilization,
+    )
+
+    # Step 5: Prepare system load
+    system_load = TenantSystemLoad(
+        current={
+            "gpu_utilization": gpu_utilization,
+            "vram_utilization": vram_utilization,
+        },
+        history={"gpu": gpu_history, "vram": vram_history},
+    )
+
+    # Return combined stats
+    return TenantResourceStats(resource_counts=resource_counts, system_load=system_load)
 
 
 @router.get("/{resource_id}", response_model=TenantResourcePublic)
