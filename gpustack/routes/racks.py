@@ -5,7 +5,7 @@ from gpustack.api.exceptions import (
     AlreadyExistsException,
     NotFoundException,
 )
-from gpustack.server.deps import SessionDep, EngineDep
+from gpustack.server.deps import SessionDep
 from gpustack.schemas.rack import (
     RackCreate,
     RackListParams,
@@ -58,7 +58,6 @@ async def create_rack(rack_create: RackCreate, session: SessionDep):
 @router.get("", response_model=RacksPublic)
 async def list_racks(
     session: SessionDep,
-    engine: EngineDep,
     params: RackListParams = Depends(),
     name: Optional[str] = None,
     cluster_id: Optional[int] = None,
@@ -72,7 +71,7 @@ async def list_racks(
 
     if params.watch:
         return StreamingResponse(
-            Rack.streaming(engine, fields=fields),
+            Rack.streaming(session=session, fields=fields),
             media_type="text/event-stream",
         )
 
@@ -755,7 +754,6 @@ async def delete_rack(rack_id: int, session: SessionDep):
 async def get_racks_by_cluster(
     cluster_id: int,
     session: SessionDep,
-    engine: EngineDep,
     params: RackListParams = Depends(),
 ):
     """Get all racks for a cluster."""
@@ -763,7 +761,7 @@ async def get_racks_by_cluster(
 
     if params.watch:
         return StreamingResponse(
-            Rack.streaming(engine, fields=fields),
+            Rack.streaming(session=session, fields=fields),
             media_type="text/event-stream",
         )
 

@@ -2,7 +2,7 @@ from typing import Optional, List
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from gpustack.server.deps import SessionDep, EngineDep
+from gpustack.server.deps import SessionDep
 from gpustack.schemas.workers import (
     Worker,
     WorkerListParams,
@@ -49,7 +49,6 @@ WorkersWithGPUsPublic = PaginatedList[WorkerWithGPUsPublic]
 
 @router.get("", response_model=WorkersWithGPUsPublic)
 async def get_workers_with_gpus(
-    engine: EngineDep,
     session: SessionDep,
     params: WorkerListParams = Depends(),
     search: str = None,
@@ -91,7 +90,7 @@ async def get_workers_with_gpus(
 
         async def worker_stream_with_gpus():
             async for event_data in Worker.streaming(
-                engine, fields=fields, fuzzy_fields=fuzzy_fields
+                session=session, fields=fields, fuzzy_fields=fuzzy_fields
             ):
                 yield event_data
 

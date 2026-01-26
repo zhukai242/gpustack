@@ -11,7 +11,7 @@ from gpustack.api.exceptions import (
     NotFoundException,
     BadRequestException,
 )
-from gpustack.server.deps import SessionDep, EngineDep, get_admin_user
+from gpustack.server.deps import SessionDep, get_admin_user
 from gpustack.schemas.tenants import (
     TenantCreate,
     TenantUpdate,
@@ -891,7 +891,6 @@ async def create_tenant(tenant_create: TenantCreateWithResources, session: Sessi
 @router.get("", response_model=TenantsPublic)
 async def list_tenants(
     session: SessionDep,
-    engine: EngineDep,
     params: TenantListParams = Depends(),
     name: Optional[str] = None,
     status: Optional[TenantStatusEnum] = None,
@@ -911,7 +910,7 @@ async def list_tenants(
     # Handle streaming mode (watch=true)
     if params.watch:
         return StreamingResponse(
-            Tenant.streaming(engine, fields=fields, fuzzy_fields=fuzzy_fields),
+            Tenant.streaming(session=session, fields=fields, fuzzy_fields=fuzzy_fields),
             media_type="text/event-stream",
         )
 

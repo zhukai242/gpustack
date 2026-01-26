@@ -7,7 +7,7 @@ from gpustack.api.exceptions import (
     NotFoundException,
     BadRequestException,
 )
-from gpustack.server.deps import SessionDep, EngineDep, get_admin_user, CurrentUserDep
+from gpustack.server.deps import SessionDep, get_admin_user, CurrentUserDep
 from gpustack.schemas.tenants import (
     TenantResourceCreate,
     TenantResourceUpdate,
@@ -135,7 +135,6 @@ async def create_tenant_resources_batch(
 @router.get("", response_model=TenantResourcesPublic)
 async def list_tenant_resources(
     session: SessionDep,
-    engine: EngineDep,
     params: TenantResourceListParams = Depends(),
     tenant_id: Optional[int] = None,
     worker_id: Optional[int] = None,
@@ -154,7 +153,7 @@ async def list_tenant_resources(
     # Handle streaming mode (watch=true)
     if params.watch:
         return StreamingResponse(
-            TenantResource.streaming(engine, fields=fields),
+            TenantResource.streaming(session=session, fields=fields),
             media_type="text/event-stream",
         )
 
@@ -723,7 +722,6 @@ async def delete_tenant_resource(resource_id: int, session: SessionDep):
 @router.get("/adjustments", response_model=TenantResourceAdjustmentsPublic)
 async def list_tenant_resource_adjustments(
     session: SessionDep,
-    engine: EngineDep,
     params: TenantResourceAdjustmentListParams = Depends(),
     tenant_id: Optional[int] = None,
     adjustment_type: Optional[ResourceAdjustmentTypeEnum] = None,
@@ -741,7 +739,7 @@ async def list_tenant_resource_adjustments(
     # Handle streaming mode (watch=true)
     if params.watch:
         return StreamingResponse(
-            TenantResourceAdjustment.streaming(engine, fields=fields),
+            TenantResourceAdjustment.streaming(session=session, fields=fields),
             media_type="text/event-stream",
         )
 
@@ -818,7 +816,6 @@ async def create_tenant_usage_details_batch(
 @router.get("/usage", response_model=TenantResourceUsageDetailsPublic)
 async def list_tenant_usage_details(
     session: SessionDep,
-    engine: EngineDep,
     params: TenantResourceUsageDetailListParams = Depends(),
     tenant_id: Optional[int] = None,
     worker_id: Optional[int] = None,
@@ -839,7 +836,7 @@ async def list_tenant_usage_details(
     # Handle streaming mode (watch=true)
     if params.watch:
         return StreamingResponse(
-            TenantResourceUsageDetail.streaming(engine, fields=fields),
+            TenantResourceUsageDetail.streaming(session=session, fields=fields),
             media_type="text/event-stream",
         )
 
