@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Type
 from enum import Enum
 from pydantic import BaseModel, Field
 from sqlmodel import (
@@ -11,10 +11,59 @@ from sqlmodel import (
     ForeignKey,
     JSON,
 )
+from sqlalchemy import TypeDecorator, String as sa_String
 import sqlalchemy as sa
 
 from gpustack.mixins import BaseModelMixin
 from gpustack.schemas.common import ListParams, PaginatedList
+
+
+# Custom type decorator to handle enum conversion for database storage
+class StringToEnum(TypeDecorator):
+    """
+    TypeDecorator that converts strings to enum members, case-insensitively
+    This ensures enum values are stored correctly in the database
+    """
+
+    impl = sa_String
+    cache_ok = True
+
+    def __init__(self, enum_class: Type[Enum], **kwargs):
+        self.enum_class = enum_class
+        super().__init__(**kwargs)
+
+    def process_bind_param(self, value, dialect):
+        """
+        Convert enum member to string for database storage
+        """
+        if value is None:
+            return None
+        if isinstance(value, Enum):
+            return value.value
+        # If it's a string, convert to enum first then get its value
+        return self.enum_class(value).value
+
+    def process_result_value(self, value, dialect):
+        """
+        Convert string from database to enum member, case-insensitively
+        """
+        if value is None:
+            return None
+
+        # Case-insensitive matching
+        value_lower = value.lower()
+        for member in self.enum_class:
+            if member.value.lower() == value_lower:
+                return member
+
+        # If no match found, return first member as default
+        return next(iter(self.enum_class))
+
+    def copy(self, **kw):
+        """
+        Create a copy of this type instance
+        """
+        return StringToEnum(self.enum_class, **kw)
 
 
 class TenantStatusEnum(str, Enum):
@@ -25,6 +74,23 @@ class TenantStatusEnum(str, Enum):
     INACTIVE = "inactive"
     SUSPENDED = "suspended"
     EXPIRED = "expired"
+
+    @classmethod
+    def _missing_(cls, value):
+        """
+        Handle case-insensitive enum values.
+        When the enum value is not found, try to match case-insensitively.
+        """
+        if not isinstance(value, str):
+            return None
+
+        # Convert the value to uppercase to match enum names
+        value_upper = value.upper()
+        for member in cls:
+            # Check both name (uppercase) and value (case-insensitive)
+            if member.name == value_upper or member.value.upper() == value_upper:
+                return member
+        return None
 
 
 class ResourceAdjustmentTypeEnum(str, Enum):
@@ -48,7 +114,11 @@ class TenantCreate(SQLModel):
     contact_email: Optional[str] = None
     resource_start_time: Optional[datetime] = None
     resource_end_time: Optional[datetime] = None
-    status: TenantStatusEnum = TenantStatusEnum.ACTIVE
+    status: TenantStatusEnum = SQLField(
+        default=TenantStatusEnum.ACTIVE,
+        sa_type=StringToEnum(TenantStatusEnum),
+        description="Tenant status",
+    )
     description: Optional[str] = None
     labels: Optional[Dict[str, str]] = SQLField(sa_column=Column(JSON), default={})
 
@@ -62,7 +132,11 @@ class TenantUpdate(SQLModel):
     contact_email: Optional[str] = None
     resource_start_time: Optional[datetime] = None
     resource_end_time: Optional[datetime] = None
-    status: Optional[TenantStatusEnum] = None
+    status: Optional[TenantStatusEnum] = SQLField(
+        default=None,
+        sa_type=StringToEnum(TenantStatusEnum),
+        description="Tenant status",
+    )
     description: Optional[str] = None
     labels: Optional[Dict[str, str]] = SQLField(sa_column=Column(JSON), default=None)
 

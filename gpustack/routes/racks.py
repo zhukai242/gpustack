@@ -120,6 +120,7 @@ async def get_racks_with_workers_and_gpus(
                 for gpu in worker.status.gpu_devices:
                     gpu_devices.append(
                         GPUDeviceInfo(
+                            id=f"{worker.name}:{gpu.type}:{gpu.index}",
                             index=gpu.index,
                             device_index=gpu.device_index,
                             device_chip_index=gpu.device_chip_index,

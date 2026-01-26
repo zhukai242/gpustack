@@ -173,7 +173,7 @@ async def get_workers(
     # Use explicit cast to String to avoid enum type conversion issues
     statement = select(LicenseActivation).where(
         LicenseActivation.worker_id.in_(worker_ids),
-        cast(LicenseActivation.status, String) == "ACTIVE",
+        cast(LicenseActivation.status, String) == "active",
     )
     result = await session.execute(statement)
     activations = result.scalars().all()

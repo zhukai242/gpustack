@@ -20,11 +20,13 @@ from gpustack.routes import (
     probes,
     proxy,
     racks,
+    reports,
     system_settings,
     tenant_resources,
     tenants,
     update,
     users,
+    users_v2,
     models,
     openai,
     workers,
@@ -59,6 +61,7 @@ api_router.include_router(
 
 v1_base_router = APIRouter(dependencies=[Depends(get_current_user)])
 v1_base_router.include_router(users.me_router, prefix="/users", tags=["Users"])
+v1_base_router.include_router(users_v2.me_router, prefix="/users-v2", tags=["Users V2"])
 v1_base_router.include_router(api_keys.router, prefix="/api-keys", tags=["API Keys"])
 v1_base_router.include_router(
     metrics.router, prefix="/metrics", include_in_schema=False
@@ -129,6 +132,7 @@ admin_routers = model_routers + [
     {"router": workers.router, "prefix": "/workers", "tags": ["Workers"]},
     {"router": gpus.router, "prefix": "/gpus", "tags": ["GPUs"]},
     {"router": users.router, "prefix": "/users", "tags": ["Users"]},
+    {"router": users_v2.router, "prefix": "/users-v2", "tags": ["Users V2"]},
     {"router": model_sets.router, "prefix": "/model-sets", "tags": ["Model Sets"]},
     {
         "router": draft_models.router,
@@ -167,6 +171,11 @@ admin_routers = model_routers + [
         "router": user_groups.router,
         "prefix": "/user-groups",
         "tags": ["User Groups"],
+    },
+    {
+        "router": reports.router,
+        "prefix": "/reports",
+        "tags": ["Reports"],
     },
 ]
 

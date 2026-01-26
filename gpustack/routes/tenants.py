@@ -62,9 +62,42 @@ class TenantCreateWithResources(BaseModel):
     description: Optional[str] = None
     labels: Optional[Dict[str, str]] = Field(default_factory=dict)
 
-    # Resource allocations
+    # Resource allocations (manual mode)
     resources: List[ResourceAllocationItem] = Field(default_factory=list)
     operator: Optional[str] = None  # Who created this tenant
+
+    # GPU model and count (automatic allocation mode)
+    gpu_model: Optional[str] = None  # GPU model name (e.g., "A100", "H100")
+    gpu_count: Optional[int] = Field(default=0, ge=0)  # Number of GPUs to allocate
+
+    # Validation to ensure either resources or gpu_model/gpu_count is provided
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "name": "Example Tenant",
+                "contact_person": "John Doe",
+                "contact_phone": "123-456-7890",
+                "contact_email": "john.doe@example.com",
+                "resource_start_time": "2026-01-25T00:00:00",
+                "resource_end_time": "2026-02-25T00:00:00",
+                "status": "ACTIVE",
+                "description": "Example tenant with auto GPU allocation",
+                "labels": {"department": "engineering", "env": "production"},
+                # Option 1: Automatic GPU allocation (uncomment to use)
+                "gpu_model": "A100",
+                "gpu_count": 2,
+                # Option 2: Manual GPU allocation (uncomment to use)
+                # "resources": [
+                #     {
+                #         "worker_id": 1,
+                #         "gpu_id": "worker-01:a100:0",
+                #         "resource_config": {}
+                #     }
+                # ],
+                "operator": "admin",
+            }
+        }
+    }
 
 
 class TenantResourceExpansion(BaseModel):
@@ -218,7 +251,7 @@ async def _build_activated_gpu_set(session: SessionDep) -> set:
     """
     active_activations = await session.exec(
         select(LicenseActivation).where(
-            LicenseActivation.status == literal_column("'ACTIVE'")
+            LicenseActivation.status == literal_column("'active'")
         )
     )
 
@@ -440,7 +473,7 @@ async def get_gpu_model_stats(
     # Get all active license activations
     active_activations = await session.exec(
         select(LicenseActivation).where(
-            LicenseActivation.status == literal_column("'ACTIVE'")
+            LicenseActivation.status == literal_column("'active'")
         )
     )
     active_activations = active_activations.all()
@@ -528,6 +561,234 @@ async def get_activated_gpu_models(session: SessionDep):
     )
 
 
+async def _validate_tenant_name(session: SessionDep, tenant_name: str) -> None:
+    """
+    Validate that a tenant name doesn't already exist.
+    """
+    from gpustack.server.tenant_services import TenantService
+
+    tenant_service = TenantService(session)
+    existing_tenant = await tenant_service.get_by_name(tenant_name)
+    if existing_tenant and not existing_tenant.deleted_at:
+        raise AlreadyExistsException(f"Tenant '{tenant_name}' already exists")
+
+
+async def _process_resource_times(
+    tenant_create: TenantCreateWithResources,
+) -> tuple[Optional[datetime], Optional[datetime]]:
+    """
+    Process resource start and end times, removing timezone info.
+    """
+    # Set resource_start_time to current time if resources are provided
+    # and no start time is specified
+    resource_start_time = tenant_create.resource_start_time
+    if tenant_create.resources and not resource_start_time:
+        resource_start_time = datetime.now()
+
+    # Remove timezone info from datetime fields
+    if resource_start_time and resource_start_time.tzinfo is not None:
+        resource_start_time = resource_start_time.replace(tzinfo=None)
+
+    resource_end_time = tenant_create.resource_end_time
+    if resource_end_time and resource_end_time.tzinfo is not None:
+        resource_end_time = resource_end_time.replace(tzinfo=None)
+
+    return resource_start_time, resource_end_time
+
+
+async def _create_tenant_admin(session: SessionDep, tenant: Tenant) -> None:
+    """
+    Create a tenant admin user if it doesn't already exist.
+    """
+    from gpustack.schemas.users import User
+    from gpustack.security import get_secret_hash
+
+    # Check if user already exists
+    existing_user = await User.one_by_field(session, "username", tenant.contact_email)
+    if not existing_user:
+        # Create tenant admin account
+        user = User(
+            username=tenant.contact_email,
+            full_name=tenant.contact_person,
+            is_admin=True,
+            is_active=True,
+            hashed_password=get_secret_hash(tenant.contact_email),
+            tenant_id=tenant.id,
+        )
+        session.add(user)
+
+
+async def _allocate_automatic_gpus(
+    session: SessionDep,
+    tenant: Tenant,
+    tenant_create: TenantCreateWithResources,
+    resource_start_time: Optional[datetime],
+    resource_end_time: Optional[datetime],
+    resource_service,
+    tenant_service,
+) -> list:
+    """
+    Allocate GPUs automatically based on requested model and count.
+    """
+    gpu_model = tenant_create.gpu_model
+    requested_gpu_count = tenant_create.gpu_count
+    allocated_resources = []
+
+    # Get all workers
+    workers = await Worker.all_by_fields(session, fields={"deleted_at": None})
+
+    # Build allocated GPU map to skip already allocated GPUs
+    allocated_gpu_map = await _build_allocated_gpu_map(
+        session, resource_service, tenant_service
+    )
+
+    # Build activated GPU set to only consider activated GPUs
+    activated_gpu_ids = await _build_activated_gpu_set(session)
+
+    # Find available GPUs matching the requested model
+    available_gpus = []
+
+    for worker in workers:
+        # Get GPU devices from worker status if available
+        gpu_devices = []
+        if worker.status:
+            gpu_devices = getattr(worker.status, "gpu_devices", [])
+
+        if gpu_devices:
+            for gpu in gpu_devices:
+                # Check if GPU is activated
+                gpu_type = gpu.type if gpu.type else "unknown"
+                gpu_arch_family = getattr(gpu, 'arch_family', '')
+                gpu_id = f"{worker.name}:{gpu_type}:{gpu.index}"
+
+                if gpu_id not in activated_gpu_ids:
+                    continue
+
+                # Check if GPU is already allocated
+                if gpu_id in allocated_gpu_map:
+                    continue
+
+                # Check if GPU model matches
+                gpu_name = getattr(gpu, 'name', '')
+                is_model_match = (
+                    gpu_arch_family.lower() == gpu_model.lower()
+                    or gpu_name
+                    and gpu_model.lower() in gpu_name.lower()
+                )
+                if is_model_match:
+                    available_gpus.append(
+                        {"worker": worker, "gpu": gpu, "gpu_id": gpu_id}
+                    )
+
+                # Stop if we have enough GPUs
+                if len(available_gpus) >= requested_gpu_count:
+                    break
+
+        # Stop if we have enough GPUs
+        if len(available_gpus) >= requested_gpu_count:
+            break
+
+    # Check if we have enough GPUs
+    if len(available_gpus) < requested_gpu_count:
+        raise BadRequestException(
+            f"Not enough available GPUs of model {gpu_model}. "
+            f"Requested: {requested_gpu_count}, Available: {len(available_gpus)}"
+        )
+
+    # Allocate the GPUs
+    selected_gpus = available_gpus[:requested_gpu_count]
+
+    for gpu_info in selected_gpus:
+        worker = gpu_info["worker"]
+        gpu = gpu_info["gpu"]
+        gpu_id = gpu_info["gpu_id"]
+
+        # Create resource allocation
+        resource_create = TenantResourceCreate(
+            tenant_id=tenant.id,
+            worker_id=worker.id,
+            gpu_id=gpu_id,
+            resource_start_time=resource_start_time,
+            resource_end_time=resource_end_time,
+            resource_config={},
+        )
+        allocated_resource = await resource_service.create(resource_create)
+        allocated_resources.append(
+            {
+                "resource_id": allocated_resource.id,
+                "worker_id": worker.id,
+                "gpu_id": gpu_id,
+            }
+        )
+    return allocated_resources
+
+
+async def _allocate_manual_resources(
+    session: SessionDep,
+    tenant: Tenant,
+    tenant_create: TenantCreateWithResources,
+    resource_start_time: Optional[datetime],
+    resource_end_time: Optional[datetime],
+    resource_service,
+) -> list:
+    """
+    Allocate resources manually based on provided resource list.
+    """
+    allocated_resources = []
+    for resource_item in tenant_create.resources:
+        # Verify worker exists
+        worker = await Worker.one_by_id(session, resource_item.worker_id)
+        if not worker or worker.deleted_at:
+            raise NotFoundException(
+                f"Worker with ID {resource_item.worker_id} not found"
+            )
+
+        # Create resource allocation with provided start time if set
+        resource_create = TenantResourceCreate(
+            tenant_id=tenant.id,
+            worker_id=resource_item.worker_id,
+            gpu_id=resource_item.gpu_id,
+            resource_start_time=resource_start_time,
+            resource_end_time=resource_end_time,
+            resource_config=resource_item.resource_config,
+        )
+        allocated_resource = await resource_service.create(resource_create)
+        allocated_resources.append(
+            {
+                "resource_id": allocated_resource.id,
+                "worker_id": resource_item.worker_id,
+                "gpu_id": resource_item.gpu_id,
+            }
+        )
+    return allocated_resources
+
+
+async def _record_resource_adjustment(
+    session: SessionDep,
+    tenant: Tenant,
+    tenant_create: TenantCreateWithResources,
+    allocated_resources: list,
+    adjustment_service,
+) -> None:
+    """
+    Record resource adjustment history.
+    """
+    if allocated_resources:
+        adjustment_create = TenantResourceAdjustmentCreate(
+            tenant_id=tenant.id,
+            adjustment_type=ResourceAdjustmentTypeEnum.ADD,
+            adjustment_time=datetime.now(),
+            operator=tenant_create.operator or "system",
+            adjustment_details={
+                "action": "initial_allocation",
+                "resource_count": len(allocated_resources),
+                "resources": allocated_resources,
+            },
+            reason="Initial resource allocation during tenant creation",
+        )
+        await adjustment_service.create(adjustment_create)
+
+
 @router.post(
     "",
     response_model=TenantPublic,
@@ -547,26 +808,22 @@ async def create_tenant(tenant_create: TenantCreateWithResources, session: Sessi
 
     All resource allocations will be recorded in the adjustment history.
     """
-    # Check if tenant with the same name already exists
+    from gpustack.server.tenant_services import (
+        TenantService,
+        TenantResourceService,
+        TenantResourceAdjustmentService,
+    )
+
+    # Validate tenant name
+    await _validate_tenant_name(session, tenant_create.name)
+
+    # Process resource times
+    resource_start_time, resource_end_time = await _process_resource_times(
+        tenant_create
+    )
+
+    # Create tenant service
     tenant_service = TenantService(session)
-    existing_tenant = await tenant_service.get_by_name(tenant_create.name)
-
-    if existing_tenant and not existing_tenant.deleted_at:
-        raise AlreadyExistsException(f"Tenant '{tenant_create.name}' already exists")
-
-    # Set resource_start_time to current time if resources are provided
-    # and no start time is specified
-    resource_start_time = tenant_create.resource_start_time
-    if tenant_create.resources and not resource_start_time:
-        resource_start_time = datetime.now()
-
-    # Remove timezone info from datetime fields to match database TIMESTAMP WITHOUT TIME ZONE
-    if resource_start_time and resource_start_time.tzinfo is not None:
-        resource_start_time = resource_start_time.replace(tzinfo=None)
-
-    resource_end_time = tenant_create.resource_end_time
-    if resource_end_time and resource_end_time.tzinfo is not None:
-        resource_end_time = resource_end_time.replace(tzinfo=None)
 
     # Create the tenant with provided resource_start_time if set
     tenant_data = TenantCreate(
@@ -574,83 +831,53 @@ async def create_tenant(tenant_create: TenantCreateWithResources, session: Sessi
         contact_person=tenant_create.contact_person,
         contact_phone=tenant_create.contact_phone,
         contact_email=tenant_create.contact_email,
-        resource_start_time=resource_start_time,  # Set provided start time if available
+        resource_start_time=resource_start_time,
         resource_end_time=resource_end_time,
         status=(
-            TenantStatusEnum.ACTIVE
+            TenantStatusEnum.ACTIVE.value
             if not resource_start_time
-            else TenantStatusEnum.INUSE
-        ),  # Set to INUSE if start time is provided
+            else TenantStatusEnum.INUSE.value
+        ),
         description=tenant_create.description,
         labels=tenant_create.labels or {},
     )
     tenant = await tenant_service.create(tenant_data)
 
     # Allocate resources if provided
-    if tenant_create.resources:
-        resource_service = TenantResourceService(session)
-        adjustment_service = TenantResourceAdjustmentService(session)
+    allocated_resources = []
+    resource_service = TenantResourceService(session)
+    adjustment_service = TenantResourceAdjustmentService(session)
 
-        allocated_resources = []
-        for resource_item in tenant_create.resources:
-            # Verify worker exists
-            worker = await Worker.one_by_id(session, resource_item.worker_id)
-            if not worker or worker.deleted_at:
-                raise NotFoundException(
-                    f"Worker with ID {resource_item.worker_id} not found"
-                )
-
-            # Create resource allocation with provided start time if set
-            resource_create = TenantResourceCreate(
-                tenant_id=tenant.id,
-                worker_id=resource_item.worker_id,
-                gpu_id=resource_item.gpu_id,
-                resource_start_time=resource_start_time,  # Use provided start time if available
-                resource_end_time=resource_end_time,
-                resource_config=resource_item.resource_config,
-            )
-            allocated_resource = await resource_service.create(resource_create)
-            allocated_resources.append(
-                {
-                    "resource_id": allocated_resource.id,
-                    "worker_id": resource_item.worker_id,
-                    "gpu_id": resource_item.gpu_id,
-                }
-            )
-
-        # Record the initial resource allocation in adjustment history
-        await adjustment_service.create(
-            TenantResourceAdjustmentCreate(
-                tenant_id=tenant.id,
-                adjustment_type=ResourceAdjustmentTypeEnum.ADD,
-                adjustment_time=datetime.now(),
-                operator=tenant_create.operator or "system",
-                adjustment_details={
-                    "action": "initial_allocation",
-                    "resource_count": len(allocated_resources),
-                    "resources": allocated_resources,
-                },
-                reason="Initial resource allocation during tenant creation",
-            )
+    # Check if we need to do automatic GPU allocation
+    if tenant_create.gpu_model and tenant_create.gpu_count > 0:
+        # Automatic allocation mode
+        allocated_resources = await _allocate_automatic_gpus(
+            session,
+            tenant,
+            tenant_create,
+            resource_start_time,
+            resource_end_time,
+            resource_service,
+            tenant_service,
+        )
+    # Manual allocation mode
+    elif tenant_create.resources:
+        allocated_resources = await _allocate_manual_resources(
+            session,
+            tenant,
+            tenant_create,
+            resource_start_time,
+            resource_end_time,
+            resource_service,
         )
 
-    # 创建用户
-    from gpustack.schemas.users import User
-    from gpustack.security import get_secret_hash
+    # Record the initial resource allocation in adjustment history
+    await _record_resource_adjustment(
+        session, tenant, tenant_create, allocated_resources, adjustment_service
+    )
 
-    # 检查是否已经存在该用户
-    existing_user = await User.one_by_field(session, "username", tenant.contact_email)
-    if not existing_user:
-        # 创建租户管理员账号
-        user = User(
-            username=tenant.contact_email,
-            full_name=tenant.contact_person,
-            is_admin=True,
-            is_active=True,
-            hashed_password=get_secret_hash(tenant.contact_email),
-            tenant_id=tenant.id,
-        )
-        session.add(user)
+    # Create tenant admin user
+    await _create_tenant_admin(session, tenant)
 
     # Commit the transaction first
     await session.commit()

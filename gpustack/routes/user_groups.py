@@ -13,9 +13,7 @@ from gpustack.schemas.user_groups import (
     UserGroupDetail,
     UserGroupListParams,
     UserGroupResource,
-    UserGroupResourceCreate,
     UserGroupMember,
-    UserGroupMemberCreate,
     UserGroupsPublic,
 )
 from gpustack.schemas.tenants import TenantResource
@@ -23,7 +21,7 @@ from gpustack.schemas.users import User
 from gpustack.schemas.load import GPULoad
 from gpustack.schemas.gpu_devices import GPUDevice
 from gpustack.schemas.workers import Worker
-from sqlmodel import select, func, or_
+from sqlmodel import select, func, or_, delete
 
 
 class GPUCardInfo(BaseModel):
@@ -36,6 +34,24 @@ class GPUCardInfo(BaseModel):
     current_usage: float = 0.0
     current_temperature: Optional[float] = None
     status: str
+    resource_id: int  # Added resource ID
+    is_allocated_to_group: bool = (
+        False  # Whether the card is already allocated to a user group
+    )
+
+
+class GPUCardStatistics(BaseModel):
+    """GPU card statistics model."""
+
+    card_type: str
+    count: int
+
+
+class GPUCardsResponse(BaseModel):
+    """Response model for GPU cards with statistics."""
+
+    cards: List[GPUCardInfo]
+    statistics: List[GPUCardStatistics]
 
 
 router = APIRouter()
@@ -50,16 +66,56 @@ router = APIRouter()
     status_code=201,
     dependencies=[Depends(get_admin_user)],
 )
-async def create_user_group(group_create: UserGroupCreate, session: SessionDep):
+async def create_user_group(
+    group_create: UserGroupCreate, current_user: CurrentUserDep, session: SessionDep
+):
     """
     Create a new user group with optional members and resources.
+    Supports direct resource ID assignment or automatic allocation by GPU model and count.
     """
     # Verify tenant exists
-    from gpustack.schemas.tenants import Tenant
+    from gpustack.schemas.tenants import Tenant, TenantResource
+    from gpustack.schemas.gpu_devices import GPUDevice
+
+    if not group_create.tenant_id:
+        group_create.tenant_id = current_user.tenant_id
 
     tenant = await Tenant.one_by_id(session, group_create.tenant_id)
     if not tenant or tenant.deleted_at:
         raise NotFoundException(f"Tenant with ID {group_create.tenant_id} not found")
+
+    # Handle automatic GPU allocation if gpu_model and gpu_count are provided
+    resource_ids = group_create.resource_ids.copy() if group_create.resource_ids else []
+
+    if group_create.gpu_model and group_create.gpu_count > 0:
+        # Get all tenant resources that are not already allocated to user groups
+        available_resources_stmt = (
+            select(TenantResource.id, GPUDevice.arch_family)
+            .join(GPUDevice, TenantResource.gpu_id == GPUDevice.id)
+            .outerjoin(
+                UserGroupResource,
+                UserGroupResource.tenant_resource_id == TenantResource.id,
+            )
+            .where(TenantResource.tenant_id == group_create.tenant_id)
+            .where(TenantResource.deleted_at.is_(None))
+            .where(UserGroupResource.id.is_(None))  # Not allocated to any user group
+            .where(GPUDevice.arch_family == group_create.gpu_model)
+        )
+
+        available_resources = await session.exec(available_resources_stmt)
+        available_resources = available_resources.all()
+
+        # Check if we have enough GPUs
+        if len(available_resources) < group_create.gpu_count:
+            raise BadRequestException(
+                f"Not enough available GPUs of model {group_create.gpu_model}. "
+                f"Requested: {group_create.gpu_count}, Available: {len(available_resources)}"
+            )
+
+        # Select the required number of GPU resources
+        selected_resources = available_resources[: group_create.gpu_count]
+        for resource in selected_resources:
+            resource_ids.append(resource.id)
 
     # Create user group
     user_group = UserGroup.model_validate(
@@ -71,14 +127,12 @@ async def create_user_group(group_create: UserGroupCreate, session: SessionDep):
     # Add members if provided
     if group_create.member_ids:
         for user_id in group_create.member_ids:
-            member = UserGroupMemberCreate(user_group_id=user_group.id, user_id=user_id)
+            member = UserGroupMember(user_group_id=user_group.id, user_id=user_id)
             session.add(member)
 
     # Add resources if provided
-    if group_create.resource_ids:
-        from gpustack.schemas.tenants import TenantResource
-
-        for resource_id in group_create.resource_ids:
+    if resource_ids:
+        for resource_id in resource_ids:
             # Get tenant resource details to get worker_id and gpu_id
             tenant_resource = await TenantResource.one_by_id(session, resource_id)
             if not tenant_resource or tenant_resource.deleted_at:
@@ -87,7 +141,7 @@ async def create_user_group(group_create: UserGroupCreate, session: SessionDep):
                 )
 
             # Create user group resource with worker_id and gpu_id
-            resource = UserGroupResourceCreate(
+            resource = UserGroupResource(
                 user_group_id=user_group.id,
                 tenant_resource_id=resource_id,
                 worker_id=tenant_resource.worker_id,
@@ -100,7 +154,7 @@ async def create_user_group(group_create: UserGroupCreate, session: SessionDep):
 
     # Count members and resources for response
     member_count = len(group_create.member_ids) if group_create.member_ids else 0
-    resource_count = len(group_create.resource_ids) if group_create.resource_ids else 0
+    resource_count = len(resource_ids) if resource_ids else 0
 
     return UserGroupPublic(
         **user_group.model_dump(),
@@ -138,7 +192,8 @@ async def list_user_groups(
         order_by=params.order_by,
     )
 
-    # Count members for each group
+    # Create list of UserGroupPublic instances with calculated fields
+    user_group_public_list = []
     for group in user_groups.items:
         # Get members count
         member_count = await session.exec(
@@ -146,7 +201,7 @@ async def list_user_groups(
             .where(UserGroupMember.user_group_id == group.id)
             .where(UserGroupMember.deleted_at.is_(None))
         )
-        group.member_count = member_count.scalar() or 0
+        member_count = member_count.first() or 0
 
         # Get resources with details
         resources = await session.exec(
@@ -160,10 +215,10 @@ async def list_user_groups(
             .where(TenantResource.deleted_at.is_(None))
         )
         resources = resources.all()
-        group.resource_count = len(resources)
+        resource_count = len(resources)
 
         # Calculate node count
-        group.node_count = len(set(r.worker_id for r in resources))
+        node_count = len(set(r.worker_id for r in resources))
 
         # Calculate GPU type counts
         gpu_type_counts = {}
@@ -182,9 +237,8 @@ async def list_user_groups(
                 arch_family = gpu_device.arch_family or "unknown"
                 gpu_type_counts[arch_family] = gpu_type_counts.get(arch_family, 0) + 1
 
-        group.gpu_type_counts = gpu_type_counts
-
-        # Calculate average GPU and VRAM utilization
+        # Calculate average GPU utilization
+        gpu_utilization = 0.0
         if gpu_ids:
             # Get latest GPU loads for each GPU
             latest_loads_query = select(
@@ -212,20 +266,21 @@ async def list_user_groups(
                     avg_gpu = sum(
                         load.gpu_utilization or 0 for load in load_data
                     ) / len(load_data)
-                    avg_vram = sum(
-                        load.vram_utilization or 0 for load in load_data
-                    ) / len(load_data)
-                    group.gpu_utilization = round(avg_gpu, 2)
-                    group.vram_utilization = round(avg_vram, 2)
-                else:
-                    group.gpu_utilization = 0.0
-                    group.vram_utilization = 0.0
-            else:
-                group.gpu_utilization = 0.0
-                group.vram_utilization = 0.0
-        else:
-            group.gpu_utilization = 0.0
-            group.vram_utilization = 0.0
+                    gpu_utilization = round(avg_gpu, 2)
+
+        # Create UserGroupPublic instance with calculated values
+        user_group_public = UserGroupPublic(
+            **group.dict(),
+            member_count=member_count,
+            resource_count=resource_count,
+            node_count=node_count,
+            gpu_type_counts=gpu_type_counts,
+            gpu_utilization=gpu_utilization,
+        )
+        user_group_public_list.append(user_group_public)
+
+    # Replace the ORM objects with UserGroupPublic instances
+    user_groups.items = user_group_public_list
 
     return user_groups
 
@@ -281,16 +336,21 @@ async def get_user_group(
 
     if gpu_ids:
         # Get average GPU/VRAM utilization per hour
+        # Use explicit expressions in all clauses to avoid GROUP BY issues
+        trunc_hour_expr = func.date_trunc('hour', func.to_timestamp(GPULoad.timestamp))
+
         stmt = (
             select(
-                func.date_trunc('hour', GPULoad.timestamp).label('hour'),
+                trunc_hour_expr.label('hour'),
                 func.avg(GPULoad.gpu_utilization).label('avg_gpu'),
                 func.avg(GPULoad.vram_utilization).label('avg_vram'),
-            )
-            .where(GPULoad.gpu_id.in_(gpu_ids))
-            .where(GPULoad.timestamp >= start_time)
-            .group_by(func.date_trunc('hour', GPULoad.timestamp))
-            .order_by(func.date_trunc('hour', GPULoad.timestamp))
+            ).where(GPULoad.gpu_id.in_(gpu_ids))
+            # Convert start_time to Unix timestamp for comparison
+            .where(GPULoad.timestamp >= int(start_time.timestamp()))
+            # Use the exact same expression in GROUP BY
+            .group_by(trunc_hour_expr)
+            # Use the exact same expression in ORDER BY
+            .order_by(trunc_hour_expr)
         )
 
         results = await session.exec(stmt)
@@ -349,19 +409,57 @@ async def update_user_group(
     # Count members and resources for response
     member_count = await session.exec(
         select(func.count(UserGroupMember.id)).where(
-            UserGroupMember.user_group_id == group_id
+            UserGroupMember.user_group_id == group_id,
+            UserGroupMember.deleted_at.is_(None),
         )
     )
     resource_count = await session.exec(
         select(func.count(UserGroupResource.id)).where(
-            UserGroupResource.user_group_id == group_id
+            UserGroupResource.user_group_id == group_id,
+            UserGroupResource.deleted_at.is_(None),
         )
     )
 
+    # Get resources to calculate node count and GPU type counts
+    resources = await session.exec(
+        select(TenantResource)
+        .join(
+            UserGroupResource,
+            UserGroupResource.tenant_resource_id == TenantResource.id,
+        )
+        .where(UserGroupResource.user_group_id == group_id)
+        .where(UserGroupResource.deleted_at.is_(None))
+        .where(TenantResource.deleted_at.is_(None))
+    )
+    resources = resources.all()
+    node_count = len(set(r.worker_id for r in resources))
+
+    # Calculate GPU type counts
+    gpu_type_counts = {}
+    gpu_ids = [r.gpu_id for r in resources if r.gpu_id]
+
+    if gpu_ids:
+        gpu_devices = await session.exec(
+            select(GPUDevice)
+            .where(GPUDevice.id.in_(gpu_ids))
+            .where(GPUDevice.deleted_at.is_(None))
+        )
+        gpu_devices = gpu_devices.all()
+
+        for gpu_device in gpu_devices:
+            arch_family = gpu_device.arch_family or "unknown"
+            gpu_type_counts[arch_family] = gpu_type_counts.get(arch_family, 0) + 1
+
+    # Default values for GPU utilization
+    gpu_utilization = 0.0
+
     return UserGroupPublic(
         **user_group.model_dump(),
-        member_count=member_count.scalar() or 0,
-        resource_count=resource_count.scalar() or 0,
+        member_count=member_count.first() or 0,
+        resource_count=resource_count.first() or 0,
+        node_count=node_count,
+        gpu_type_counts=gpu_type_counts,
+        gpu_utilization=gpu_utilization,
     )
 
 
@@ -375,10 +473,18 @@ async def delete_user_group(group_id: int, session: SessionDep):
     if not user_group or user_group.deleted_at:
         raise NotFoundException(f"User group with ID {group_id} not found")
 
-    # Soft delete user group
-    from gpustack.mixins import soft_delete
+    # Hard delete associated user group members
+    await session.exec(
+        delete(UserGroupMember).where(UserGroupMember.user_group_id == group_id)
+    )
 
-    await soft_delete(session, user_group)
+    # Hard delete associated user group resources
+    await session.exec(
+        delete(UserGroupResource).where(UserGroupResource.user_group_id == group_id)
+    )
+
+    # Hard delete the user group itself
+    await session.exec(delete(UserGroup).where(UserGroup.id == group_id))
     await session.commit()
 
     return {}
@@ -416,7 +522,7 @@ async def add_group_member(group_id: int, user_id: int, session: SessionDep):
         )
 
     # Add member
-    member = UserGroupMemberCreate(user_group_id=group_id, user_id=user_id)
+    member = UserGroupMember(user_group_id=group_id, user_id=user_id)
     session.add(member)
     await session.commit()
 
@@ -485,7 +591,7 @@ async def add_group_resource(
         )
 
     # Add resource
-    group_resource = UserGroupResourceCreate(
+    group_resource = UserGroupResource(
         user_group_id=group_id,
         tenant_resource_id=tenant_resource_id,
         worker_id=resource.worker_id,
@@ -531,10 +637,16 @@ async def remove_group_resource(
 
 
 @router.get("/stats/summary")
-async def get_user_group_stats(session: SessionDep, tenant_id: Optional[int] = None):
+async def get_user_group_stats(
+    session: SessionDep,
+    current_user: CurrentUserDep,
+    tenant_id: Optional[int] = None,
+):
     """
     Get user group statistics.
     """
+    if not tenant_id:
+        tenant_id = current_user.tenant_id
     # Base query filters
     filters = {}
     if tenant_id:
@@ -546,7 +658,7 @@ async def get_user_group_stats(session: SessionDep, tenant_id: Optional[int] = N
         .where(UserGroup.deleted_at.is_(None))
         .where(UserGroup.tenant_id == tenant_id if tenant_id else True)
     )
-    total_groups = total_groups.scalar() or 0
+    total_groups = total_groups.first() or 0
 
     # Get total members
     total_members = await session.exec(
@@ -556,7 +668,7 @@ async def get_user_group_stats(session: SessionDep, tenant_id: Optional[int] = N
         .where(UserGroup.deleted_at.is_(None))
         .where(UserGroup.tenant_id == tenant_id if tenant_id else True)
     )
-    total_members = total_members.scalar() or 0
+    total_members = total_members.first() or 0
 
     # Get total nodes and GPUs for the tenant
     from gpustack.schemas.tenants import TenantResource
@@ -566,14 +678,14 @@ async def get_user_group_stats(session: SessionDep, tenant_id: Optional[int] = N
         .where(TenantResource.deleted_at.is_(None))
         .where(TenantResource.tenant_id == tenant_id if tenant_id else True)
     )
-    total_nodes = total_nodes.scalar() or 0
+    total_nodes = total_nodes.first() or 0
 
     total_gpus = await session.exec(
         select(func.count(TenantResource.id))
         .where(TenantResource.deleted_at.is_(None))
         .where(TenantResource.tenant_id == tenant_id if tenant_id else True)
     )
-    total_gpus = total_gpus.scalar() or 0
+    total_gpus = total_gpus.first() or 0
 
     # Get group resource usage
     group_usage = []
@@ -593,7 +705,7 @@ async def get_user_group_stats(session: SessionDep, tenant_id: Optional[int] = N
             .where(UserGroupMember.user_group_id == group.id)
             .where(UserGroupMember.deleted_at.is_(None))
         )
-        member_count = member_count.scalar() or 0
+        member_count = member_count.first() or 0
 
         # Count group resources
         resources = await session.exec(
@@ -756,7 +868,7 @@ async def get_group_resource_trend(
     }
 
 
-@router.get("/tenant/gpu-cards", response_model=List[GPUCardInfo])
+@router.get("/tenant/gpu-cards", response_model=GPUCardsResponse)
 async def get_tenant_gpu_cards(
     session: SessionDep,
     current_user: CurrentUserDep,
@@ -781,6 +893,7 @@ async def get_tenant_gpu_cards(
             UserGroup.name.label('user_group_name'),
             GPUDevice.temperature.label('current_temperature'),
             Worker.state.label('worker_status'),  # Add worker status
+            TenantResource.id.label('resource_id'),  # Add resource ID
         )
         .join(TenantResource, GPUDevice.id == TenantResource.gpu_id)
         .join(Worker, Worker.id == TenantResource.worker_id)
@@ -843,10 +956,10 @@ async def get_tenant_gpu_cards(
             for load in load_results.all():
                 latest_loads[load.gpu_id] = load.gpu_utilization or 0.0
 
-    # Format the response
-    response = []
+    # Format GPU cards list
+    gpu_cards_list = []
     for card in gpu_cards:
-        response.append(
+        gpu_cards_list.append(
             GPUCardInfo(
                 card_id=card[0],  # card_id
                 card_type=card[1] or "unknown",  # card_type
@@ -855,7 +968,24 @@ async def get_tenant_gpu_cards(
                 current_usage=latest_loads.get(card[0], 0.0),  # Use card_id as key
                 current_temperature=card[4],  # current_temperature
                 status=card[5],  # Use worker status
+                resource_id=card[6],  # resource_id
+                is_allocated_to_group=card[3] is not None,
             )
         )
 
-    return response
+    # Calculate statistics
+    type_counts = {}
+    for card in gpu_cards_list:
+        card_type = card.card_type
+        if card_type not in type_counts:
+            type_counts[card_type] = 0
+        type_counts[card_type] += 1
+
+    # Format statistics
+    statistics = [
+        GPUCardStatistics(card_type=card_type, count=count)
+        for card_type, count in type_counts.items()
+    ]
+
+    # Return response with statistics
+    return GPUCardsResponse(cards=gpu_cards_list, statistics=statistics)

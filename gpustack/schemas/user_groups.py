@@ -26,7 +26,7 @@ class UserGroupCreate(SQLModel):
     """Create a user group."""
 
     name: str
-    tenant_id: int
+    tenant_id: Optional[int] = None
     description: Optional[str] = None
     status: UserGroupStatusEnum = UserGroupStatusEnum.ACTIVE
     labels: Optional[Dict[str, str]] = Field(sa_column=Column(JSON), default={})
@@ -35,6 +35,12 @@ class UserGroupCreate(SQLModel):
     )
     resource_ids: Optional[List[int]] = Field(
         default_factory=list, description="资源ID列表"
+    )
+    gpu_model: Optional[str] = Field(
+        default=None, description="GPU型号，用于自动分配资源"
+    )
+    gpu_count: Optional[int] = Field(
+        default=0, ge=0, description="GPU个数，用于自动分配资源"
     )
 
 

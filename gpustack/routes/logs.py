@@ -31,6 +31,13 @@ class LogTypeCount(BaseModel):
     count: int
 
 
+class SeverityCount(BaseModel):
+    """Count of logs by severity."""
+
+    severity: str
+    count: int
+
+
 class DailyLogStats(BaseModel):
     """Daily log statistics."""
 
@@ -43,6 +50,7 @@ class TotalLogStats(BaseModel):
     """Total log statistics."""
 
     total: List[LogTypeCount]  # Total log counts by type
+    severity: List[SeverityCount]  # Total log counts by severity
 
 
 class ExceptionLog(BaseModel):
@@ -420,7 +428,7 @@ async def get_daily_log_stats(session: SessionDep):
 @router.get("/total-stats", response_model=TotalLogStats)
 async def get_total_log_stats(session: SessionDep):
     """
-    Get total log counts by type for all time.
+    Get total log counts by type and severity for all time.
     """
     # Define log types using enum
     log_types = [
@@ -432,11 +440,12 @@ async def get_total_log_stats(session: SessionDep):
         LogTypeEnum.HARDWARE,
     ]
 
-    # Initialize result dictionary
+    # Initialize result dictionaries
     total_counts = {log_type: 0 for log_type in log_types}
+    severity_counts = {}
 
-    # Query total worker logs
-    stmt_worker = (
+    # Query total worker logs by type
+    stmt_worker_type = (
         select(WorkerLog.log_type, func.count(WorkerLog.id).label('count'))
         .where(
             and_(
@@ -447,11 +456,11 @@ async def get_total_log_stats(session: SessionDep):
         .group_by(WorkerLog.log_type)
     )
 
-    worker_result = await session.exec(stmt_worker)
-    worker_logs = worker_result.all()
+    worker_type_result = await session.exec(stmt_worker_type)
+    worker_type_logs = worker_type_result.all()
 
-    # Query total GPU logs
-    stmt_gpu = (
+    # Query total GPU logs by type
+    stmt_gpu_type = (
         select(GPULog.log_type, func.count(GPULog.id).label('count'))
         .where(
             and_(
@@ -462,17 +471,54 @@ async def get_total_log_stats(session: SessionDep):
         .group_by(GPULog.log_type)
     )
 
-    gpu_result = await session.exec(stmt_gpu)
-    gpu_logs = gpu_result.all()
+    gpu_type_result = await session.exec(stmt_gpu_type)
+    gpu_type_logs = gpu_type_result.all()
 
-    # Combine worker and GPU logs
-    for log in worker_logs:
+    # Query total worker logs by severity
+    stmt_worker_severity = (
+        select(WorkerLog.severity, func.count(WorkerLog.id).label('count'))
+        .where(
+            and_(
+                WorkerLog.severity.in_(['warning', 'error']),
+                WorkerLog.log_type.in_(log_types),
+            )
+        )
+        .group_by(WorkerLog.severity)
+    )
+
+    worker_severity_result = await session.exec(stmt_worker_severity)
+    worker_severity_logs = worker_severity_result.all()
+
+    # Query total GPU logs by severity
+    stmt_gpu_severity = (
+        select(GPULog.severity, func.count(GPULog.id).label('count'))
+        .where(
+            and_(
+                GPULog.severity.in_(['warning', 'error']),
+                GPULog.log_type.in_(log_types),
+            )
+        )
+        .group_by(GPULog.severity)
+    )
+
+    gpu_severity_result = await session.exec(stmt_gpu_severity)
+    gpu_severity_logs = gpu_severity_result.all()
+
+    # Combine worker and GPU logs by type
+    for log in worker_type_logs:
         if log.log_type in total_counts:
             total_counts[log.log_type] += log.count
 
-    for log in gpu_logs:
+    for log in gpu_type_logs:
         if log.log_type in total_counts:
             total_counts[log.log_type] += log.count
+
+    # Combine worker and GPU logs by severity
+    for log in worker_severity_logs:
+        severity_counts[log.severity] = severity_counts.get(log.severity, 0) + log.count
+
+    for log in gpu_severity_logs:
+        severity_counts[log.severity] = severity_counts.get(log.severity, 0) + log.count
 
     # Format results
     total_result = [
@@ -480,7 +526,12 @@ async def get_total_log_stats(session: SessionDep):
         for log_type, count in total_counts.items()
     ]
 
-    return TotalLogStats(total=total_result)
+    severity_result = [
+        SeverityCount(severity=severity, count=count)
+        for severity, count in severity_counts.items()
+    ]
+
+    return TotalLogStats(total=total_result, severity=severity_result)
 
 
 @router.get("/exceptions", response_model=ExceptionLogList)

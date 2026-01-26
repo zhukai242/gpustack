@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Optional, List, TYPE_CHECKING, Dict, Any
+from typing import Optional, List, TYPE_CHECKING, Dict, Any, ClassVar
 from pydantic import BaseModel
 from sqlmodel import SQLModel, Field, Relationship, Column, Integer, ForeignKey
 import sqlalchemy as sa
@@ -54,7 +54,12 @@ class Rack(RackBase, BaseModelMixin, table=True):
 class RackListParams(ListParams):
     """List racks parameters."""
 
-    sortable_fields: list[str] = ["name", "cluster_id", "created_at", "updated_at"]
+    sortable_fields: ClassVar[List[str]] = [
+        "name",
+        "cluster_id",
+        "created_at",
+        "updated_at",
+    ]
 
 
 class RackPublic(RackBase):
@@ -72,6 +77,7 @@ RacksPublic = PaginatedList[RackPublic]
 class GPUDeviceInfo(BaseModel):
     """GPU device information."""
 
+    id: str  # GPU unique identifier (format: worker_name:gpu_type:gpu_index)
     index: Optional[int] = None
     device_index: Optional[int] = None
     device_chip_index: Optional[int] = None

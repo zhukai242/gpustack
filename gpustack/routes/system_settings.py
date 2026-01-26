@@ -49,23 +49,40 @@ async def list_system_settings(
     """
     List all system settings with pagination and filtering.
     """
-    # Build order by list from params
-    order_by = []
-    if params.sort_by and params.order:
-        order_by = [(params.sort_by, params.order)]
+    from gpustack.schemas.system_settings import SettingCategoryEnum, SettingTypeEnum
 
     # Build filters
     filters = {}
+
+    # Extract filters from params
+    if params.type is not None:
+        # 确保type值是正确的枚举成员
+        if isinstance(params.type, SettingTypeEnum):
+            filters["type"] = params.type
+        else:
+            # 如果是字符串，转换为枚举成员
+            filters["type"] = SettingTypeEnum._missing_(params.type)
+    if params.key is not None:
+        filters["key"] = params.key
+    if params.is_required is not None:
+        filters["is_required"] = params.is_required
+    if params.is_editable is not None:
+        filters["is_editable"] = params.is_editable
+
     if category:
-        filters["category"] = category
+        # 转换category参数为枚举类型
+        try:
+            filters["category"] = SettingCategoryEnum(category)
+        except ValueError:
+            filters["category"] = SettingCategoryEnum._missing_(category)
 
     # Get paginated items using the model's paginated_by_query method
     paginated_result = await SystemSetting.paginated_by_query(
         session=session,
         fields=filters,
         page=params.page,
-        per_page=params.per_page,
-        order_by=order_by,
+        per_page=params.perPage,
+        order_by=params.order_by,
     )
 
     # Convert to response model
@@ -75,6 +92,28 @@ async def list_system_settings(
         ],
         pagination=paginated_result.pagination,
     )
+
+
+@router.get("/categories", response_model=List[str])
+async def get_setting_categories():
+    """
+    Get all available setting categories.
+    """
+    return [category.value for category in SettingCategoryEnum]
+
+
+@router.get("/categories/keys", response_model=List[str])
+async def get_setting_category_keys(
+    category: Optional[str] = None, session: AsyncSession = Depends(get_session)
+):
+    """
+    Get all unique setting keys for a specific category.
+    """
+    query = select(func.distinct(SystemSetting.key))
+    if category:
+        query = query.where(SystemSetting.category == category)
+    result = await session.exec(query)
+    return result.all()
 
 
 @router.get("/{setting_id}", response_model=SystemSettingPublic)
@@ -153,25 +192,3 @@ async def delete_system_setting(
     await session.delete(setting)
     await session.commit()
     return {"message": "System setting deleted successfully"}
-
-
-@router.get("/categories", response_model=List[str])
-async def get_setting_categories():
-    """
-    Get all available setting categories.
-    """
-    return [category.value for category in SettingCategoryEnum]
-
-
-@router.get("/categories/keys", response_model=List[str])
-async def get_setting_category_keys(
-    category: Optional[str] = None, session: AsyncSession = Depends(get_session)
-):
-    """
-    Get all unique setting keys for a specific category.
-    """
-    query = select(func.distinct(SystemSetting.key))
-    if category:
-        query = query.where(SystemSetting.category == category)
-    result = await session.exec(query)
-    return result.all()

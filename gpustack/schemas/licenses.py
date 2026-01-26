@@ -1,6 +1,6 @@
 from datetime import datetime
 from enum import Enum
-from typing import Optional, List, TYPE_CHECKING
+from typing import Optional, List, TYPE_CHECKING, ClassVar
 from sqlmodel import SQLModel, Field, Column, ForeignKey, Relationship
 from sqlalchemy import Integer, String
 
@@ -30,9 +30,14 @@ class LicenseStatusEnum(str, Enum):
         """
         当枚举值不存在时，尝试从字符串值中查找匹配项
         解决数据库中存储小写值无法转换为枚举的问题
+        支持大小写不敏感匹配
         """
+        if not isinstance(value, str):
+            return None
+
+        value_lower = value.lower()
         for member in cls:
-            if member.value == value:
+            if member.value == value or member.value.lower() == value_lower:
                 return member
         return None
 
@@ -335,18 +340,16 @@ class LicenseListParams(ListParams):
     License列表查询参数
     """
 
-    sortable_fields: list[str] = Field(
-        default_factory=lambda: [
-            "license_id",
-            "status",
-            "license_type",
-            "issued_time",
-            "activation_time",
-            "expiration_time",
-            "created_at",
-            "updated_at",
-        ]
-    )
+    sortable_fields: ClassVar[List[str]] = [
+        "license_id",
+        "status",
+        "license_type",
+        "issued_time",
+        "activation_time",
+        "expiration_time",
+        "created_at",
+        "updated_at",
+    ]
 
 
 class LicenseActivationListParams(ListParams):
@@ -354,18 +357,16 @@ class LicenseActivationListParams(ListParams):
     License激活列表查询参数
     """
 
-    sortable_fields: list[str] = Field(
-        default_factory=lambda: [
-            "license_id",
-            "worker_id",
-            "gpu_sn",
-            "status",
-            "activation_time",
-            "expiration_time",
-            "created_at",
-            "updated_at",
-        ]
-    )
+    sortable_fields: ClassVar[List[str]] = [
+        "license_id",
+        "worker_id",
+        "gpu_sn",
+        "status",
+        "activation_time",
+        "expiration_time",
+        "created_at",
+        "updated_at",
+    ]
 
 
 LicensesPublic = PaginatedList[LicensePublic]

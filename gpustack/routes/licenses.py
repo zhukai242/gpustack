@@ -468,6 +468,39 @@ async def get_gpu_license_stats(session: AsyncSession = Depends(get_session)):
     )
 
 
+# License Operation Routes - Move before generic {license_id} route
+@router.get("/operations", response_model=List[LicenseOperationPublic])
+async def list_license_operations(
+    license_id: Optional[int] = None,
+    operation_type: Optional[LicenseOperationTypeEnum] = None,
+    operator: Optional[str] = None,
+    start_time: Optional[datetime] = None,
+    end_time: Optional[datetime] = None,
+    session: AsyncSession = Depends(get_session),
+):
+    """
+    List license operations with filtering.
+    """
+    query = select(LicenseOperation)
+
+    if license_id:
+        query = query.where(LicenseOperation.license_id == license_id)
+    if operation_type:
+        query = query.where(LicenseOperation.operation_type == operation_type)
+    if operator:
+        query = query.where(LicenseOperation.operator == operator)
+    if start_time:
+        query = query.where(LicenseOperation.operation_time >= start_time)
+    if end_time:
+        query = query.where(LicenseOperation.operation_time <= end_time)
+
+    # Order by operation time descending
+    query = query.order_by(LicenseOperation.operation_time.desc())
+
+    result = await session.exec(query)
+    return result.all()
+
+
 @router.get("/{license_id}", response_model=LicensePublic)
 async def get_license(license_id: int, session: AsyncSession = Depends(get_session)):
     """
@@ -568,7 +601,8 @@ async def activate_license(
     if existing_activation.first():
         raise HTTPException(
             status_code=400,
-            detail=f"GPU with SN '{request.gpu_sn}' is already activated with this license code",
+            detail=f"GPU with SN '{request.gpu_sn}' is already activated with "
+            f"this license code",
         )
 
     # 2. Call external API to get license information (reserved for future implementation)
@@ -1121,38 +1155,6 @@ async def delete_license_activation(
 
 
 # License Operation Routes
-
-
-@router.get("/operations", response_model=List[LicenseOperationPublic])
-async def list_license_operations(
-    license_id: Optional[int] = None,
-    operation_type: Optional[LicenseOperationTypeEnum] = None,
-    operator: Optional[str] = None,
-    start_time: Optional[datetime] = None,
-    end_time: Optional[datetime] = None,
-    session: AsyncSession = Depends(get_session),
-):
-    """
-    List license operations with filtering.
-    """
-    query = select(LicenseOperation)
-
-    if license_id:
-        query = query.where(LicenseOperation.license_id == license_id)
-    if operation_type:
-        query = query.where(LicenseOperation.operation_type == operation_type)
-    if operator:
-        query = query.where(LicenseOperation.operator == operator)
-    if start_time:
-        query = query.where(LicenseOperation.operation_time >= start_time)
-    if end_time:
-        query = query.where(LicenseOperation.operation_time <= end_time)
-
-    # Order by operation time descending
-    query = query.order_by(LicenseOperation.operation_time.desc())
-
-    result = await session.exec(query)
-    return result.all()
 
 
 @router.get("/{license_id}/operations", response_model=List[LicenseOperationPublic])

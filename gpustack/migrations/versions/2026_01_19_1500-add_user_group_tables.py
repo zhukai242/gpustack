@@ -7,10 +7,12 @@ Create Date: 2026-01-19 15:00:00.000000
 """
 from typing import Sequence, Union
 
+import sqlalchemy as sa
 from sqlalchemy import Column, Integer, String, ForeignKey, JSON, Index, UniqueConstraint
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from alembic import op
+import gpustack
 
 # revision identifiers, used by Alembic.
 revision: str = '2026_01_19_1500'
@@ -29,9 +31,9 @@ def upgrade() -> None:
         Column('description', String(512), nullable=True),
         Column('status', String(50), nullable=False, default='active'),
         Column('labels', JSON, nullable=True),
-        Column('created_at', Integer, nullable=False),
-        Column('updated_at', Integer, nullable=False),
-        Column('deleted_at', Integer, nullable=True),
+        Column('created_at', gpustack.schemas.common.UTCDateTime(), nullable=False),
+        Column('updated_at', gpustack.schemas.common.UTCDateTime(), nullable=False),
+        Column('deleted_at', gpustack.schemas.common.UTCDateTime(), nullable=True),
     )
     
     # Create indexes for user_groups
@@ -46,9 +48,9 @@ def upgrade() -> None:
         Column('id', Integer, primary_key=True, autoincrement=True),
         Column('user_group_id', Integer, ForeignKey('user_groups.id', ondelete='CASCADE'), nullable=False),
         Column('user_id', Integer, ForeignKey('users.id', ondelete='CASCADE'), nullable=False),
-        Column('created_at', Integer, nullable=False),
-        Column('updated_at', Integer, nullable=False),
-        Column('deleted_at', Integer, nullable=True),
+        Column('created_at', gpustack.schemas.common.UTCDateTime(), nullable=False),
+        Column('updated_at', gpustack.schemas.common.UTCDateTime(), nullable=False),
+        Column('deleted_at', gpustack.schemas.common.UTCDateTime(), nullable=True),
         UniqueConstraint('user_group_id', 'user_id', name='uq_user_group_members_user_group_id_user_id')
     )
     
@@ -64,9 +66,9 @@ def upgrade() -> None:
         Column('tenant_resource_id', Integer, ForeignKey('tenant_resources.id', ondelete='CASCADE'), nullable=False),
         Column('worker_id', Integer, ForeignKey('workers.id', ondelete='CASCADE'), nullable=False),
         Column('gpu_id', String(255), nullable=True),
-        Column('created_at', Integer, nullable=False),
-        Column('updated_at', Integer, nullable=False),
-        Column('deleted_at', Integer, nullable=True),
+        Column('created_at', gpustack.schemas.common.UTCDateTime(), nullable=False),
+        Column('updated_at', gpustack.schemas.common.UTCDateTime(), nullable=False),
+        Column('deleted_at', gpustack.schemas.common.UTCDateTime(), nullable=True),
         UniqueConstraint('user_group_id', 'tenant_resource_id', name='uq_user_group_resources_user_group_id_tenant_resource_id')
     )
     

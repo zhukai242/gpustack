@@ -43,136 +43,136 @@ def upgrade() -> None:
     # Insert initial system settings data
     # Basic Settings
     op.execute("""INSERT INTO system_settings (key, value, type, category, description, is_required, is_editable, default_value, labels, created_at, updated_at) VALUES
-    ('system_name', '算力管理平台', 'string', 'basic', '系统名称', true, true, '算力管理平台', null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('system_version', 'v1.0.0', 'string', 'basic', '系统版本', true, false, 'v1.0.0', null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('deployment_environment', 'production', 'string', 'basic', '部署环境', true, true, 'production', '{"options": ["production", "testing", "development"]}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('timezone', 'Asia/Shanghai', 'string', 'basic', '系统时区', true, true, 'Asia/Shanghai', '{"options": ["Asia/Shanghai", "UTC", "Europe/London", "America/New_York"]}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('ntp_server', 'pool.ntp.org', 'string', 'basic', 'NTP服务器', true, true, 'pool.ntp.org', null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('enable_ntp_sync', true, 'boolean', 'basic', '启用NTP同步', false, true, true, null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('system_language', 'zh_CN', 'string', 'basic', '系统语言', true, true, 'zh_CN', '{"options": ["zh_CN", "en_US", "ja_JP"]}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('auto_detect_browser_language', true, 'boolean', 'basic', '自动检测浏览器语言', false, true, true, null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+    ('system_name', to_json('算力管理平台'::text), 'STRING', 'BASIC', '系统名称', true, true, to_json('算力管理平台'::text), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('system_version', to_json('v1.0.0'::text), 'STRING', 'BASIC', '系统版本', true, false, to_json('v1.0.0'::text), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('deployment_environment', to_json('production'::text), 'STRING', 'BASIC', '部署环境', true, true, to_json('production'::text), '{"options": ["production", "testing", "development"]}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('timezone', to_json('Asia/Shanghai'::text), 'STRING', 'BASIC', '系统时区', true, true, to_json('Asia/Shanghai'::text), '{"options": ["Asia/Shanghai", "UTC", "Europe/London", "America/New_York"]}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('ntp_server', to_json('pool.ntp.org'::text), 'STRING', 'BASIC', 'NTP服务器', true, true, to_json('pool.ntp.org'::text), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('enable_ntp_sync', to_json(true::boolean), 'BOOLEAN', 'BASIC', '启用NTP同步', false, true, to_json(true::boolean), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('system_language', to_json('zh_CN'::text), 'STRING', 'BASIC', '系统语言', true, true, to_json('zh_CN'::text), '{"options": ["zh_CN", "en_US", "ja_JP"]}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('auto_detect_browser_language', to_json(true::boolean), 'BOOLEAN', 'BASIC', '自动检测浏览器语言', false, true, to_json(true::boolean), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
     """)
     
     # Network Settings
     op.execute("""INSERT INTO system_settings (key, value, type, category, description, is_required, is_editable, default_value, labels, created_at, updated_at) VALUES
-    ('network_mode', 'bridge', 'string', 'network', '网络模式', true, true, 'bridge', '{"options": ["bridge", "nat", "host"]}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('default_gateway', '192.168.1.1', 'string', 'network', '默认网关', true, true, '192.168.1.1', null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('subnet_mask', '255.255.255.0', 'string', 'network', '子网掩码', true, true, '255.255.255.0', null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('dns_servers', '8.8.8.8,114.114.114.114', 'string', 'network', 'DNS服务器', true, true, '8.8.8.8,114.114.114.114', null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('backup_dns_servers', '1.1.1.1,223.5.5.5', 'string', 'network', '备用DNS服务器', false, true, '1.1.1.1,223.5.5.5', null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('enable_http', false, 'boolean', 'network', '启用HTTP服务', false, true, false, null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('enable_https', true, 'boolean', 'network', '启用HTTPS服务', true, true, true, null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('http_port', 80, 'integer', 'network', 'HTTP端口', false, true, 80, null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('https_port', 443, 'integer', 'network', 'HTTPS端口', true, true, 443, null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('enable_websocket', true, 'boolean', 'network', '启用WebSocket', false, true, true, null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('enable_firewall', true, 'boolean', 'network', '启用防火墙', false, true, true, null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+    ('network_mode', to_json('bridge'::text), 'STRING', 'NETWORK', '网络模式', true, true, to_json('bridge'::text), '{"options": ["bridge", "nat", "host"]}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('default_gateway', to_json('192.168.1.1'::text), 'STRING', 'NETWORK', '默认网关', true, true, to_json('192.168.1.1'::text), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('subnet_mask', to_json('255.255.255.0'::text), 'STRING', 'NETWORK', '子网掩码', true, true, to_json('255.255.255.0'::text), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('dns_servers', to_json('8.8.8.8,114.114.114.114'::text), 'STRING', 'NETWORK', 'DNS服务器', true, true, to_json('8.8.8.8,114.114.114.114'::text), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('backup_dns_servers', to_json('1.1.1.1,223.5.5.5'::text), 'STRING', 'NETWORK', '备用DNS服务器', false, true, to_json('1.1.1.1,223.5.5.5'::text), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('enable_http', to_json(false::boolean), 'BOOLEAN', 'NETWORK', '启用HTTP服务', false, true, to_json(false::boolean), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('enable_https', to_json(true::boolean), 'BOOLEAN', 'NETWORK', '启用HTTPS服务', true, true, to_json(true::boolean), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('http_port', to_json(80::integer), 'INTEGER', 'NETWORK', 'HTTP端口', false, true, to_json(80::integer), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('https_port', to_json(443::integer), 'INTEGER', 'NETWORK', 'HTTPS端口', true, true, to_json(443::integer), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('enable_websocket', to_json(true::boolean), 'BOOLEAN', 'NETWORK', '启用WebSocket', false, true, to_json(true::boolean), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('enable_firewall', to_json(true::boolean), 'BOOLEAN', 'NETWORK', '启用防火墙', false, true, to_json(true::boolean), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
     """)
     
     # Security Settings
     op.execute("""INSERT INTO system_settings (key, value, type, category, description, is_required, is_editable, default_value, labels, created_at, updated_at) VALUES
-    ('authentication_mode', 'local', 'string', 'security', '认证模式', true, true, 'local', '{"options": ["local", "ldap", "oidc", "radius"]}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('enable_two_factor_auth', false, 'boolean', 'security', '启用双因素认证', false, true, false, null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('password_auth_type', 'password', 'string', 'security', '密码认证类型', true, true, 'password', '{"options": ["password", "sms", "authenticator"]}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('password_expiry_days', 30, 'integer', 'security', '密码有效期（天）', true, true, 30, '{"options": [30, 60, 90, 180, 0]}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('enforce_password_complexity', true, 'boolean', 'security', '强制密码复杂度', false, true, true, null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('disable_reused_passwords', true, 'boolean', 'security', '禁用重复密码', false, true, true, null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('enable_ip_whitelist', false, 'boolean', 'security', '启用IP白名单', false, true, false, null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('allowed_ip_ranges', '192.168.10.0/24,10.0.0.0/8', 'string', 'security', '允许的IP范围', false, true, '192.168.10.0/24,10.0.0.0/8', null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('enable_session_timeout', true, 'boolean', 'security', '启用会话超时', false, true, true, null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('session_timeout_minutes', 30, 'integer', 'security', '会话超时时间（分钟）', true, true, 30, null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('encryption_algorithm', 'aes-256', 'string', 'security', '加密算法', true, true, 'aes-256', '{"options": ["aes-256", "aes-128"]}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('encrypt_sensitive_data', true, 'boolean', 'security', '加密存储敏感数据', false, true, true, null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+    ('authentication_mode', to_json('local'::text), 'STRING', 'SECURITY', '认证模式', true, true, to_json('local'::text), '{"options": ["local", "ldap", "oidc", "radius"]}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('enable_two_factor_auth', to_json(false::boolean), 'BOOLEAN', 'SECURITY', '启用双因素认证', false, true, to_json(false::boolean), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('password_auth_type', to_json('password'::text), 'STRING', 'SECURITY', '密码认证类型', true, true, to_json('password'::text), '{"options": ["password", "sms", "authenticator"]}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('password_expiry_days', to_json(30::integer), 'INTEGER', 'SECURITY', '密码有效期（天）', true, true, to_json(30::integer), '{"options": [30, 60, 90, 180, 0]}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('enforce_password_complexity', to_json(true::boolean), 'BOOLEAN', 'SECURITY', '强制密码复杂度', false, true, to_json(true::boolean), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('disable_reused_passwords', to_json(true::boolean), 'BOOLEAN', 'SECURITY', '禁用重复密码', false, true, to_json(true::boolean), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('enable_ip_whitelist', to_json(false::boolean), 'BOOLEAN', 'SECURITY', '启用IP白名单', false, true, to_json(false::boolean), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('allowed_ip_ranges', to_json('192.168.10.0/24,10.0.0.0/8'::text), 'STRING', 'SECURITY', '允许的IP范围', false, true, to_json('192.168.10.0/24,10.0.0.0/8'::text), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('enable_session_timeout', to_json(true::boolean), 'BOOLEAN', 'SECURITY', '启用会话超时', false, true, to_json(true::boolean), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('session_timeout_minutes', to_json(30::integer), 'INTEGER', 'SECURITY', '会话超时时间（分钟）', true, true, to_json(30::integer), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('encryption_algorithm', to_json('aes-256'::text), 'STRING', 'SECURITY', '加密算法', true, true, to_json('aes-256'::text), '{"options": ["aes-256", "aes-128"]}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('encrypt_sensitive_data', to_json(true::boolean), 'BOOLEAN', 'SECURITY', '加密存储敏感数据', false, true, to_json(true::boolean), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
     """)
     
     # Storage Settings
     op.execute("""INSERT INTO system_settings (key, value, type, category, description, is_required, is_editable, default_value, labels, created_at, updated_at) VALUES
-    ('storage_type', 'local', 'string', 'storage', '存储类型', true, true, 'local', '{"options": ["local", "nfs", "s3", "ceph"]}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('default_storage_pool', 'storage-pool-01', 'string', 'storage', '默认存储池', true, true, 'storage-pool-01', null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('enable_auto_expand', true, 'boolean', 'storage', '启用自动扩展', false, true, true, null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('enable_data_compression', true, 'boolean', 'storage', '启用数据压缩', false, true, true, null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('enable_data_deduplication', false, 'boolean', 'storage', '启用数据去重', false, true, false, null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('storage_retention_days', 365, 'integer', 'storage', '存储期限（天）', true, true, 365, '{"options": [30, 90, 180, 365, 0]}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('enable_auto_archive', true, 'boolean', 'storage', '启用自动归档', false, true, true, null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('archive_threshold_days', 90, 'integer', 'storage', '归档阈值（天）', true, true, 90, null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('enable_auto_backup', true, 'boolean', 'storage', '启用自动备份', false, true, true, null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('backup_frequency', 'daily', 'string', 'storage', '备份频率', true, true, 'daily', '{"options": ["daily", "weekly", "monthly"]}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+    ('storage_type', to_json('local'::text), 'STRING', 'STORAGE', '存储类型', true, true, to_json('local'::text), '{"options": ["local", "nfs", "s3", "ceph"]}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('default_storage_pool', to_json('storage-pool-01'::text), 'STRING', 'STORAGE', '默认存储池', true, true, to_json('storage-pool-01'::text), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('enable_auto_expand', to_json(true::boolean), 'BOOLEAN', 'STORAGE', '启用自动扩展', false, true, to_json(true::boolean), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('enable_data_compression', to_json(true::boolean), 'BOOLEAN', 'STORAGE', '启用数据压缩', false, true, to_json(true::boolean), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('enable_data_deduplication', to_json(false::boolean), 'BOOLEAN', 'STORAGE', '启用数据去重', false, true, to_json(false::boolean), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('storage_retention_days', to_json(365::integer), 'INTEGER', 'STORAGE', '存储期限（天）', true, true, to_json(365::integer), '{"options": [30, 90, 180, 365, 0]}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('enable_auto_archive', to_json(true::boolean), 'BOOLEAN', 'STORAGE', '启用自动归档', false, true, to_json(true::boolean), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('archive_threshold_days', to_json(90::integer), 'INTEGER', 'STORAGE', '归档阈值（天）', true, true, to_json(90::integer), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('enable_auto_backup', to_json(true::boolean), 'BOOLEAN', 'STORAGE', '启用自动备份', false, true, to_json(true::boolean), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('backup_frequency', to_json('daily'::text), 'STRING', 'STORAGE', '备份频率', true, true, to_json('daily'::text), '{"options": ["daily", "weekly", "monthly"]}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
     """)
     
     # Compute Resource Settings
     op.execute("""INSERT INTO system_settings (key, value, type, category, description, is_required, is_editable, default_value, labels, created_at, updated_at) VALUES
-    ('gpu_scheduling_policy', 'load_balancing', 'string', 'compute', 'GPU调度策略', true, true, 'load_balancing', '{"options": ["load_balancing", "priority", "affinity"]}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('gpu_sharing_mode', 'exclusive', 'string', 'compute', 'GPU共享模式', true, true, 'exclusive', '{"options": ["exclusive", "time_sharing", "memory_isolation"]}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('enable_gpu_monitoring', true, 'boolean', 'compute', '启用GPU监控', false, true, true, null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('enable_gpu_auto_downclock', true, 'boolean', 'compute', '启用GPU自动降频', false, true, true, null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('gpu_temperature_threshold', 85, 'integer', 'compute', 'GPU温度阈值（°C）', true, true, 85, null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('cpu_scheduling_policy', 'cfs', 'string', 'compute', 'CPU调度策略', true, true, 'cfs', '{"options": ["cfs", "realtime"]}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('enable_hyperthreading', true, 'boolean', 'compute', '启用超线程', false, true, true, null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('cpu_core_count', 16, 'integer', 'compute', 'CPU核心数量', true, true, 16, null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('memory_capacity_gb', 128, 'integer', 'compute', '内存容量（GB）', true, true, 128, null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('enable_memory_compression', false, 'boolean', 'compute', '启用内存压缩', false, true, false, null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('enable_memory_hot_add', true, 'boolean', 'compute', '启用内存热添加', false, true, true, null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('storage_io_scheduler', 'cfq', 'string', 'compute', '存储IO调度策略', true, true, 'cfq', '{"options": ["noop", "cfq", "deadline"]}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+    ('gpu_scheduling_policy', to_json('load_balancing'::text), 'STRING', 'COMPUTE', 'GPU调度策略', true, true, to_json('load_balancing'::text), '{"options": ["load_balancing", "priority", "affinity"]}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('gpu_sharing_mode', to_json('exclusive'::text), 'STRING', 'COMPUTE', 'GPU共享模式', true, true, to_json('exclusive'::text), '{"options": ["exclusive", "time_sharing", "memory_isolation"]}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('enable_gpu_monitoring', to_json(true::boolean), 'BOOLEAN', 'COMPUTE', '启用GPU监控', false, true, to_json(true::boolean), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('enable_gpu_auto_downclock', to_json(true::boolean), 'BOOLEAN', 'COMPUTE', '启用GPU自动降频', false, true, to_json(true::boolean), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('gpu_temperature_threshold', to_json(85::integer), 'INTEGER', 'COMPUTE', 'GPU温度阈值（°C）', true, true, to_json(85::integer), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('cpu_scheduling_policy', to_json('cfs'::text), 'STRING', 'COMPUTE', 'CPU调度策略', true, true, to_json('cfs'::text), '{"options": ["cfs", "realtime"]}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('enable_hyperthreading', to_json(true::boolean), 'BOOLEAN', 'COMPUTE', '启用超线程', false, true, to_json(true::boolean), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('cpu_core_count', to_json(16::integer), 'INTEGER', 'COMPUTE', 'CPU核心数量', true, true, to_json(16::integer), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('memory_capacity_gb', to_json(128::integer), 'INTEGER', 'COMPUTE', '内存容量（GB）', true, true, to_json(128::integer), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('enable_memory_compression', to_json(false::boolean), 'BOOLEAN', 'COMPUTE', '启用内存压缩', false, true, to_json(false::boolean), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('enable_memory_hot_add', to_json(true::boolean), 'BOOLEAN', 'COMPUTE', '启用内存热添加', false, true, to_json(true::boolean), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('storage_io_scheduler', to_json('cfq'::text), 'STRING', 'COMPUTE', '存储IO调度策略', true, true, to_json('cfq'::text), '{"options": ["noop", "cfq", "deadline"]}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
     """)
     
     # Monitoring Settings
     op.execute("""INSERT INTO system_settings (key, value, type, category, description, is_required, is_editable, default_value, labels, created_at, updated_at) VALUES
-    ('monitoring_interval', 15, 'integer', 'monitoring', '监控频率（秒）', true, true, 15, '{"options": [15, 30, 60, 300, 600]}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('monitor_cpu_usage', true, 'boolean', 'monitoring', '监控CPU使用率', false, true, true, null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('monitor_cpu_temperature', true, 'boolean', 'monitoring', '监控CPU温度', false, true, true, null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('monitor_gpu_usage', true, 'boolean', 'monitoring', '监控GPU使用率', false, true, true, null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('monitor_gpu_temperature', true, 'boolean', 'monitoring', '监控GPU温度', false, true, true, null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('monitor_memory_usage', true, 'boolean', 'monitoring', '监控内存使用率', false, true, true, null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('monitor_disk_usage', true, 'boolean', 'monitoring', '监控磁盘使用率', false, true, true, null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('monitor_network_io', true, 'boolean', 'monitoring', '监控网络IO', false, true, true, null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('monitor_disk_io', true, 'boolean', 'monitoring', '监控磁盘IO', false, true, true, null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('enable_email_alert', true, 'boolean', 'monitoring', '启用邮件告警', false, true, true, null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('enable_sms_alert', false, 'boolean', 'monitoring', '启用短信告警', false, true, false, null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('enable_webhook_alert', false, 'boolean', 'monitoring', '启用Webhook告警', false, true, false, null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('enable_dingtalk_alert', false, 'boolean', 'monitoring', '启用钉钉告警', false, true, false, null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('enable_wechat_alert', false, 'boolean', 'monitoring', '启用微信告警', false, true, false, null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('cpu_usage_threshold', 85, 'integer', 'monitoring', 'CPU使用率阈值（%）', true, true, 85, null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('cpu_temperature_threshold', 85, 'integer', 'monitoring', 'CPU温度阈值（°C）', true, true, 85, null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('gpu_usage_threshold', 90, 'integer', 'monitoring', 'GPU使用率阈值（%）', true, true, 90, null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('gpu_temperature_threshold_monitoring', 90, 'integer', 'monitoring', 'GPU温度阈值（°C）', true, true, 90, null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('memory_usage_threshold', 80, 'integer', 'monitoring', '内存使用率阈值（%）', true, true, 80, null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+    ('monitoring_interval', to_json(15::integer), 'INTEGER', 'MONITORING', '监控频率（秒）', true, true, to_json(15::integer), '{"options": [15, 30, 60, 300, 600]}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('monitor_cpu_usage', to_json(true::boolean), 'BOOLEAN', 'MONITORING', '监控CPU使用率', false, true, to_json(true::boolean), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('monitor_cpu_temperature', to_json(true::boolean), 'BOOLEAN', 'MONITORING', '监控CPU温度', false, true, to_json(true::boolean), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('monitor_gpu_usage', to_json(true::boolean), 'BOOLEAN', 'MONITORING', '监控GPU使用率', false, true, to_json(true::boolean), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('monitor_gpu_temperature', to_json(true::boolean), 'BOOLEAN', 'MONITORING', '监控GPU温度', false, true, to_json(true::boolean), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('monitor_memory_usage', to_json(true::boolean), 'BOOLEAN', 'MONITORING', '监控内存使用率', false, true, to_json(true::boolean), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('monitor_disk_usage', to_json(true::boolean), 'BOOLEAN', 'MONITORING', '监控磁盘使用率', false, true, to_json(true::boolean), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('monitor_network_io', to_json(true::boolean), 'BOOLEAN', 'MONITORING', '监控网络IO', false, true, to_json(true::boolean), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('monitor_disk_io', to_json(true::boolean), 'BOOLEAN', 'MONITORING', '监控磁盘IO', false, true, to_json(true::boolean), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('enable_email_alert', to_json(true::boolean), 'BOOLEAN', 'MONITORING', '启用邮件告警', false, true, to_json(true::boolean), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('enable_sms_alert', to_json(false::boolean), 'BOOLEAN', 'MONITORING', '启用短信告警', false, true, to_json(false::boolean), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('enable_webhook_alert', to_json(false::boolean), 'BOOLEAN', 'MONITORING', '启用Webhook告警', false, true, to_json(false::boolean), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('enable_dingtalk_alert', to_json(false::boolean), 'BOOLEAN', 'MONITORING', '启用钉钉告警', false, true, to_json(false::boolean), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('enable_wechat_alert', to_json(false::boolean), 'BOOLEAN', 'MONITORING', '启用微信告警', false, true, to_json(false::boolean), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('cpu_usage_threshold', to_json(85::integer), 'INTEGER', 'MONITORING', 'CPU使用率阈值（%）', true, true, to_json(85::integer), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('cpu_temperature_threshold', to_json(85::integer), 'INTEGER', 'MONITORING', 'CPU温度阈值（°C）', true, true, to_json(85::integer), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('gpu_usage_threshold', to_json(90::integer), 'INTEGER', 'MONITORING', 'GPU使用率阈值（%）', true, true, to_json(90::integer), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('gpu_temperature_threshold_monitoring', to_json(90::integer), 'INTEGER', 'MONITORING', 'GPU温度阈值（°C）', true, true, to_json(90::integer), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('memory_usage_threshold', to_json(80::integer), 'INTEGER', 'MONITORING', '内存使用率阈值（%）', true, true, to_json(80::integer), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
     """)
     
     # Logging Settings
     op.execute("""INSERT INTO system_settings (key, value, type, category, description, is_required, is_editable, default_value, labels, created_at, updated_at) VALUES
-    ('system_log_level', 'DEBUG', 'string', 'logging', '系统日志级别', true, true, 'INFO', '{"options": ["DEBUG", "INFO", "WARN", "ERROR", "FATAL"]}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('app_log_level', 'DEBUG', 'string', 'logging', '应用日志级别', true, true, 'INFO', '{"options": ["DEBUG", "INFO", "WARN", "ERROR", "FATAL"]}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('log_format', 'text', 'string', 'logging', '日志格式', true, true, 'text', '{"options": ["text", "json", "syslog"]}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('log_retention_days', 7, 'integer', 'logging', '日志存储天数', true, true, 7, '{"options": [7, 30, 90, 180, 365]}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('enable_log_rotation', true, 'boolean', 'logging', '启用日志轮转', false, true, true, null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('log_rotation_type', 'time', 'string', 'logging', '日志轮转类型', true, true, 'time', '{"options": ["size", "time"]}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('log_file_size', 100, 'integer', 'logging', '日志文件大小（MB）', true, true, 100, null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('output_to_file', true, 'boolean', 'logging', '输出到文件', false, true, true, null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('output_to_console', true, 'boolean', 'logging', '输出到控制台', false, true, true, null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('output_to_syslog', false, 'boolean', 'logging', '输出到Syslog', false, true, false, null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('output_to_elk', false, 'boolean', 'logging', '输出到ELK', false, true, false, null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+    ('system_log_level', to_json('DEBUG'::text), 'STRING', 'LOGGING', '系统日志级别', true, true, to_json('INFO'::text), '{"options": ["DEBUG", "INFO", "WARN", "ERROR", "FATAL"]}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('app_log_level', to_json('DEBUG'::text), 'STRING', 'LOGGING', '应用日志级别', true, true, to_json('INFO'::text), '{"options": ["DEBUG", "INFO", "WARN", "ERROR", "FATAL"]}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('log_format', to_json('text'::text), 'STRING', 'LOGGING', '日志格式', true, true, to_json('text'::text), '{"options": ["text", "json", "syslog"]}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('log_retention_days', to_json(7::integer), 'INTEGER', 'LOGGING', '日志存储天数', true, true, to_json(7::integer), '{"options": [7, 30, 90, 180, 365]}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('enable_log_rotation', to_json(true::boolean), 'BOOLEAN', 'LOGGING', '启用日志轮转', false, true, to_json(true::boolean), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('log_rotation_type', to_json('time'::text), 'STRING', 'LOGGING', '日志轮转类型', true, true, to_json('time'::text), '{"options": ["size", "time"]}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('log_file_size', to_json(100::integer), 'INTEGER', 'LOGGING', '日志文件大小（MB）', true, true, to_json(100::integer), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('output_to_file', to_json(true::boolean), 'BOOLEAN', 'LOGGING', '输出到文件', false, true, to_json(true::boolean), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('output_to_console', to_json(true::boolean), 'BOOLEAN', 'LOGGING', '输出到控制台', false, true, to_json(true::boolean), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('output_to_syslog', to_json(false::boolean), 'BOOLEAN', 'LOGGING', '输出到Syslog', false, true, to_json(false::boolean), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('output_to_elk', to_json(false::boolean), 'BOOLEAN', 'LOGGING', '输出到ELK', false, true, to_json(false::boolean), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
     """)
     
     # Maintenance Settings
     op.execute("""INSERT INTO system_settings (key, value, type, category, description, is_required, is_editable, default_value, labels, created_at, updated_at) VALUES
-    ('enable_auto_backup', true, 'boolean', 'maintenance', '启用自动备份', false, true, true, null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('backup_frequency_maintenance', 'weekly', 'string', 'maintenance', '备份频率', true, true, 'daily', '{"options": ["daily", "weekly", "monthly"]}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('backup_retention_count', 7, 'integer', 'maintenance', '备份保留份数', true, true, 7, null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('enable_incremental_backup', true, 'boolean', 'maintenance', '启用增量备份', false, true, true, null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('enable_backup_encryption', true, 'boolean', 'maintenance', '启用备份加密', false, true, true, null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('enable_auto_update', true, 'boolean', 'maintenance', '自动检查更新', false, true, true, null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('enable_auto_install_update', false, 'boolean', 'maintenance', '自动安装更新', false, true, false, null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('enable_auto_restart', true, 'boolean', 'maintenance', '启用自动重启', false, true, true, null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('enable_auto_clean_temp_files', true, 'boolean', 'maintenance', '自动清理临时文件', false, true, true, null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('enable_auto_clean_log_files', true, 'boolean', 'maintenance', '自动清理日志文件', false, true, true, null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+    ('enable_auto_backup', to_json(true::boolean), 'BOOLEAN', 'MAINTENANCE', '启用自动备份', false, true, to_json(true::boolean), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('backup_frequency_maintenance', to_json('weekly'::text), 'STRING', 'MAINTENANCE', '备份频率', true, true, to_json('daily'::text), '{"options": ["daily", "weekly", "monthly"]}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('backup_retention_count', to_json(7::integer), 'INTEGER', 'MAINTENANCE', '备份保留份数', true, true, to_json(7::integer), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('enable_incremental_backup', to_json(true::boolean), 'BOOLEAN', 'MAINTENANCE', '启用增量备份', false, true, to_json(true::boolean), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('enable_backup_encryption', to_json(true::boolean), 'BOOLEAN', 'MAINTENANCE', '启用备份加密', false, true, to_json(true::boolean), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('enable_auto_update', to_json(true::boolean), 'BOOLEAN', 'MAINTENANCE', '自动检查更新', false, true, to_json(true::boolean), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('enable_auto_install_update', to_json(false::boolean), 'BOOLEAN', 'MAINTENANCE', '自动安装更新', false, true, to_json(false::boolean), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('enable_auto_restart', to_json(true::boolean), 'BOOLEAN', 'MAINTENANCE', '启用自动重启', false, true, to_json(true::boolean), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('enable_auto_clean_temp_files', to_json(true::boolean), 'BOOLEAN', 'MAINTENANCE', '自动清理临时文件', false, true, to_json(true::boolean), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('enable_auto_clean_log_files', to_json(true::boolean), 'BOOLEAN', 'MAINTENANCE', '自动清理日志文件', false, true, to_json(true::boolean), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
     """)
     
     # Integration Settings
     op.execute("""INSERT INTO system_settings (key, value, type, category, description, is_required, is_editable, default_value, labels, created_at, updated_at) VALUES
-    ('enable_api_access', true, 'boolean', 'integration', '启用API访问', false, true, true, null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('api_key', 'sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx', 'string', 'integration', 'API密钥', true, true, 'sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx', null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('integrate_prometheus', false, 'boolean', 'integration', '集成Prometheus', false, true, false, null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('integrate_grafana', false, 'boolean', 'integration', '集成Grafana', false, true, false, null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    ('integrate_ldap', false, 'boolean', 'integration', '集成LDAP', false, true, false, null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+    ('enable_api_access', to_json(true::boolean), 'BOOLEAN', 'INTEGRATION', '启用API访问', false, true, to_json(true::boolean), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('api_key', to_json('sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'::text), 'STRING', 'INTEGRATION', 'API密钥', true, true, to_json('sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'::text), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('integrate_prometheus', to_json(false::boolean), 'BOOLEAN', 'INTEGRATION', '集成Prometheus', false, true, to_json(false::boolean), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('integrate_grafana', to_json(false::boolean), 'BOOLEAN', 'INTEGRATION', '集成Grafana', false, true, to_json(false::boolean), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('integrate_ldap', to_json(false::boolean), 'BOOLEAN', 'INTEGRATION', '集成LDAP', false, true, to_json(false::boolean), null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
     """)
 
 

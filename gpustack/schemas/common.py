@@ -31,6 +31,7 @@ class ListParams(BaseModel):
     )
 
     sortable_fields: ClassVar[List[str]] = []
+    filterable_fields: ClassVar[List[str]] = []
 
     @field_validator('sort_by')
     def validate_sort_by(cls, v: Optional[str]) -> Optional[str]:

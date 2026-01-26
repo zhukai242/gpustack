@@ -8,7 +8,7 @@ from typing import Any, AsyncGenerator, Callable, List, Optional, Union, Tuple
 
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy import func, event as sa_event, inspect
-from sqlmodel import SQLModel, and_, asc, col, desc, or_, select, text
+from sqlmodel import SQLModel, and_, asc, desc, or_, select, text
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
@@ -184,10 +184,12 @@ class ActiveRecordMixin:
     async def all_by_fields(
         cls,
         session: AsyncSession,
-        fields: dict = {},
+        fields: Optional[dict] = None,
         fuzzy_fields: Optional[dict] = None,
         extra_conditions: Optional[List] = None,
     ):
+        if fields is None:
+            fields = {}
         """
         Return all objects with the given fields and values.
         Return an empty list if not found.
@@ -216,6 +218,143 @@ class ActiveRecordMixin:
         return result.all()
 
     @classmethod
+    def _check_enum_field(cls, column) -> Tuple[bool, Optional[Any]]:
+        """
+        Check if a column is an enum field and return its enum class if available.
+        """
+        is_enum_field = False
+        enum_cls = None
+
+        # 尝试多种方式获取枚举类，使用try-except块捕获所有可能的异常
+        try:
+            # 1. 检查是否是SQLAlchemy的Enum类型或自定义的Enum类型
+            if hasattr(column.type, 'enum_class'):
+                enum_cls = column.type.enum_class
+                if enum_cls:
+                    is_enum_field = True
+
+            # 2. 检查是否是Python内置的枚举类型
+            elif (
+                hasattr(column.type, '__class__')
+                and column.type.__class__.__name__ == 'EnumType'
+            ):
+                is_enum_field = True
+                # 尝试获取枚举类
+                if hasattr(column.type, 'enum_class'):
+                    enum_cls = column.type.enum_class
+        except Exception:
+            # 如果发生任何异常，跳过枚举检测
+            pass
+
+        return is_enum_field, enum_cls
+
+    @classmethod
+    def _get_enum_value(cls, enum_cls, value) -> Any:
+        """
+        Convert a value to the appropriate enum value.
+        """
+        if not isinstance(value, enum_cls):
+            # 先将字符串转换为大写，然后尝试转换为枚举
+            value_upper = str(value).upper()
+            try:
+                return enum_cls(value_upper)
+            except ValueError:
+                # 如果大写转换失败，尝试大小写不敏感匹配
+                value_lower = str(value).lower()
+                for member in enum_cls:
+                    if member.value.lower() == value_lower:
+                        return member
+                # 如果没有找到匹配的枚举成员，使用第一个成员作为默认值
+                return next(iter(enum_cls))
+        return value
+
+    @classmethod
+    def _build_field_conditions(cls, fields: dict) -> tuple[list, list]:
+        """
+        Build conditions from field filters.
+        """
+        conditions = []
+        count_conditions = []
+
+        for key, value in fields.items():
+            column = getattr(cls, key)
+            is_enum_field, enum_cls = cls._check_enum_field(column)
+
+            if is_enum_field and enum_cls:
+                try:
+                    enum_value = cls._get_enum_value(enum_cls, value)
+                    conditions.append(column == enum_value)
+                    count_conditions.append(column == enum_value)
+                except Exception:
+                    continue
+            else:
+                conditions.append(column == value)
+                count_conditions.append(column == value)
+
+        return conditions, count_conditions
+
+    @classmethod
+    def _build_fuzzy_conditions(cls, fuzzy_fields: dict) -> list:
+        """
+        Build fuzzy match conditions.
+        """
+        return [
+            func.lower(getattr(cls, key)).like(f"%{str(value).lower()}%")
+            for key, value in fuzzy_fields.items()
+        ]
+
+    @classmethod
+    def _apply_ordering(cls, statement, order_by, session) -> Any:
+        """
+        Apply ordering to the statement.
+        """
+        for field_expression, direction in order_by:
+            if isinstance(field_expression, str):
+                if '.' in field_expression:
+                    expr = cls._parse_nested_field_expression(session, field_expression)
+                    order_func = asc(expr) if direction.lower() == "asc" else desc(expr)
+                    statement = statement.order_by(order_func)
+                else:
+                    column = getattr(cls, field_expression)
+                    order_func = (
+                        asc(column) if direction.lower() == "asc" else desc(column)
+                    )
+                    statement = statement.order_by(order_func)
+            else:
+                order_func = (
+                    asc(field_expression)
+                    if direction.lower() == "asc"
+                    else desc(field_expression)
+                )
+                statement = statement.order_by(order_func)
+
+        return statement
+
+    @classmethod
+    def _build_count_statement(
+        cls, count_conditions, fuzzy_fields, extra_conditions
+    ) -> Any:
+        """
+        Build the count statement.
+        """
+        count_statement = select(func.count(cls.id))
+
+        if count_conditions:
+            count_statement = count_statement.where(and_(*count_conditions))
+
+        if fuzzy_fields:
+            fuzzy_conditions = [
+                func.lower(getattr(cls, key)).like(f"%{str(value).lower()}%")
+                for key, value in fuzzy_fields.items()
+            ]
+            count_statement = count_statement.where(or_(*fuzzy_conditions))
+
+        if extra_conditions:
+            count_statement = count_statement.where(and_(*extra_conditions))
+
+        return count_statement
+
+    @classmethod
     async def paginated_by_query(
         cls,
         session: AsyncSession,
@@ -227,87 +366,61 @@ class ActiveRecordMixin:
         order_by: Optional[List[Tuple[Union[str, Any], str]]] = None,
     ) -> PaginatedList[SQLModel]:
         """
-        Return a paginated and optionally sorted list of objects matching the given query criteria.
+        Return a paginated and optionally sorted list of objects matching criteria.
 
         Args:
-            session (AsyncSession): The SQLAlchemy async session used to interact with the database.
-            fields (Optional[dict]): Exact match filters as key-value pairs.
-            fuzzy_fields (Optional[dict]): Fuzzy match filters using the SQL `LIKE` operator.
-            extra_conditions (Optional[List]): Additional SQLAlchemy conditions to apply to the query.
-            page (int): Page number for pagination, starting from 1. Default is 1.
-            per_page (int): Number of items per page. Default is 100.
-            order_by (Optional[List[Tuple[Union[str, Any], str]]]): List of tuples specifying the
-                fields or expressions to sort by and their respective directions ('asc' or 'desc').
-                If not provided, defaults to `created_at DESC`.
+            session: The SQLAlchemy async session.
+            fields: Exact match filters as key-value pairs.
+            fuzzy_fields: Fuzzy match filters using SQL `LIKE`.
+            extra_conditions: Additional SQLAlchemy conditions.
+            page: Page number for pagination, starting from 1.
+            per_page: Number of items per page.
+            order_by: List of tuples specifying sort fields and directions.
 
         Returns:
-            PaginatedList[SQLModel]: A paginated list of matching objects with pagination metadata.
+            PaginatedList: A paginated list with metadata.
         """
 
         statement = select(cls)
-        if fields:
-            conditions = [
-                col(getattr(cls, key)) == value for key, value in fields.items()
-            ]
-            statement = statement.where(and_(*conditions))
+        count_conditions = []
 
+        # Build field conditions
+        if fields:
+            conditions, count_conditions = cls._build_field_conditions(fields)
+            if conditions:
+                statement = statement.where(and_(*conditions))
+
+        # Build fuzzy conditions
         if fuzzy_fields:
-            fuzzy_conditions = [
-                func.lower(getattr(cls, key)).like(f"%{str(value).lower()}%")
-                for key, value in fuzzy_fields.items()
-            ]
+            fuzzy_conditions = cls._build_fuzzy_conditions(fuzzy_fields)
             statement = statement.where(or_(*fuzzy_conditions))
 
+        # Add extra conditions
         if extra_conditions:
             statement = statement.where(and_(*extra_conditions))
 
+        # Set default ordering if not provided
         if not order_by:
             order_by = [("created_at", "desc")]
 
-        for field_expression, direction in order_by:
-            if isinstance(field_expression, str):
-                if '.' in str(field_expression):
-                    # Nested fields for JSON columns
-                    expr = cls._parse_nested_field_expression(session, field_expression)
-                    statement = statement.order_by(
-                        asc(expr) if direction.lower() == "asc" else desc(expr)
-                    )
-                else:
-                    # Regular fields
-                    column = col(getattr(cls, field_expression))
-                    statement = statement.order_by(
-                        asc(column) if direction.lower() == "asc" else desc(column)
-                    )
-            else:
-                # Expression
-                statement = statement.order_by(
-                    asc(field_expression)
-                    if direction.lower() == "asc"
-                    else desc(field_expression)
-                )
+        # Apply ordering
+        statement = cls._apply_ordering(statement, order_by, session)
 
+        # Apply pagination
         if page is not None and page > 0 and per_page is not None:
-            statement = statement.offset((page - 1) * per_page).limit(per_page)
+            offset = (page - 1) * per_page
+            statement = statement.offset(offset).limit(per_page)
+
+        # Execute main query
         items = (await session.exec(statement)).all()
 
-        count_statement = select(func.count(cls.id))
-        if fields:
-            conditions = [
-                col(getattr(cls, key)) == value for key, value in fields.items()
-            ]
-            count_statement = count_statement.where(and_(*conditions))
-
-        if fuzzy_fields:
-            fuzzy_conditions = [
-                col(getattr(cls, key)).like(f"%{value}%")
-                for key, value in fuzzy_fields.items()
-            ]
-            count_statement = count_statement.where(or_(*fuzzy_conditions))
-
-        if extra_conditions:
-            count_statement = count_statement.where(and_(*extra_conditions))
-
+        # Build and execute count statement
+        count_statement = cls._build_count_statement(
+            count_conditions, fuzzy_fields, extra_conditions
+        )
         count = (await session.exec(count_statement)).one()
+
+        # Calculate pagination
         total_page = math.ceil(count / per_page)
         pagination = Pagination(
             page=page,
@@ -375,7 +488,8 @@ class ActiveRecordMixin:
 
         if dialect == 'postgresql':
             if is_array_length:
-                # Build PGSQL JSON path length expression like jsonb_array_length(status->'gpus')
+                # Build PGSQL JSON path length expression like \
+                # jsonb_array_length(status->'gpus')
                 json_path_str = "->".join([f"'{part}'" for part in json_path_parts])
                 json_expr = text(
                     f"COALESCE(jsonb_array_length(({column_name}->{json_path_str})::jsonb), 0)"
@@ -521,9 +635,11 @@ class ActiveRecordMixin:
     async def count_by_fields(
         cls,
         session: AsyncSession,
-        fields: dict = {},
+        fields: Optional[dict] = None,
         extra_conditions: Optional[List] = None,
     ) -> int:
+        if fields is None:
+            fields = {}
         """
         Return the number of records matching the given fields and conditions.
         """

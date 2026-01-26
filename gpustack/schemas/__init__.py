@@ -14,6 +14,19 @@ from gpustack.schemas.clusters import (
     WorkerPoolPublic,
     WorkerPoolsPublic,
 )
+from gpustack.schemas.reports import (
+    Report,
+    ReportCreate,
+    ReportUpdate,
+    ReportDetail,
+    ReportDetailBase,
+    ReportTypeEnum,
+    ReportStatusEnum,
+    ReportPublic,
+    ReportsPublic,
+    ReportDetailPublic,
+    ReportDetailsPublic,
+)
 from gpustack.schemas.inference_backend import (
     InferenceBackendPublic,
     InferenceBackendsPublic,
@@ -125,4 +138,15 @@ __all__ = [
     "InferenceBackendsPublic",
     "InferenceBackendCreate",
     "InferenceBackendUpdate",
+    "Report",
+    "ReportCreate",
+    "ReportUpdate",
+    "ReportDetail",
+    "ReportDetailBase",
+    "ReportTypeEnum",
+    "ReportStatusEnum",
+    "ReportPublic",
+    "ReportsPublic",
+    "ReportDetailPublic",
+    "ReportDetailsPublic",
 ]

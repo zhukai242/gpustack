@@ -76,6 +76,9 @@ class UserBase(SQLModel):
 
 class UserCreate(UserBase):
     password: str
+    user_group_ids: Optional[List[int]] = Field(
+        default_factory=list, description="List of user group IDs to add the user to"
+    )
 
     @field_validator('password')
     def validate_password(cls, value):
