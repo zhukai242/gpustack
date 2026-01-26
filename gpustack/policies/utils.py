@@ -1,7 +1,9 @@
 import asyncio
 import logging
 import os
-from typing import Awaitable, Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional
+
+from gpustack.client.worker_filesystem_client import WorkerFilesystemClient
 from gpustack.policies.base import (
     Allocatable,
     Allocated,
@@ -13,8 +15,6 @@ from gpustack.schemas.models import (
     SourceEnum,
 )
 from gpustack.schemas.workers import Worker, GPUDevicesInfo, GPUDeviceInfo
-from sqlmodel.ext.asyncio.session import AsyncSession
-from sqlalchemy.ext.asyncio import AsyncEngine
 from pydantic import BaseModel
 
 from gpustack.utils.hub import get_model_weight_size, get_diffusion_model_weight_size
@@ -33,8 +33,8 @@ class WorkerGPUInfo(BaseModel):
     allocatable_vram: int  # in bytes
 
 
-async def get_worker_allocatable_resource(  # noqa: C901
-    engine: AsyncEngine,
+def get_worker_allocatable_resource(  # noqa: C901
+    all_model_instances: List[ModelInstance],
     worker: Worker,
     gpu_type: Optional[str] = None,
 ) -> Allocatable:
@@ -47,7 +47,7 @@ async def get_worker_allocatable_resource(  # noqa: C901
             allocated.vram[gpu_index] = allocated.vram.get(gpu_index, 0) + vram
 
     is_unified_memory = worker.status.memory.is_unified_memory
-    model_instances = await get_worker_model_instances(engine, worker)
+    model_instances = get_worker_model_instances(all_model_instances, worker)
     allocated = Allocated(ram=0, vram={})
 
     for model_instance in model_instances:
@@ -231,7 +231,9 @@ def group_workers_by_gpu_type(workers: List[Worker]) -> Dict[str, List[Worker]]:
     return gpu_type_to_workers
 
 
-async def estimate_model_vram(model: Model, token: Optional[str] = None) -> int:
+async def estimate_model_vram(
+    model: Model, token: Optional[str] = None, workers: Optional[List[Worker]] = None
+) -> int:
     """
     Estimate the vram requirement in bytes heuristically.
     This is the minimum requirement to help us decide how many GPUs are needed for the model.
@@ -274,8 +276,8 @@ async def estimate_model_vram(model: Model, token: Optional[str] = None) -> int:
                 asyncio.to_thread(get_model_weight_size, model, token),
                 timeout=timeout_in_seconds,
             )
-        elif model.source == SourceEnum.LOCAL_PATH and os.path.exists(model.local_path):
-            weight_size = get_local_model_weight_size(model.local_path)
+        elif model.source == SourceEnum.LOCAL_PATH:
+            weight_size = await get_local_model_weight_size(model.local_path, workers)
     except asyncio.TimeoutError:
         logger.warning(f"Timeout when getting weight size for model {model.name}")
     except Exception as e:
@@ -286,7 +288,7 @@ async def estimate_model_vram(model: Model, token: Optional[str] = None) -> int:
 
 
 async def estimate_diffusion_model_vram(
-    model: Model, token: Optional[str] = None
+    model: Model, token: Optional[str] = None, workers: Optional[List[Worker]] = None
 ) -> int:
     """ """
     if model.env and 'GPUSTACK_MODEL_VRAM_CLAIM' in model.env:
@@ -300,11 +302,11 @@ async def estimate_diffusion_model_vram(
             or model.source == SourceEnum.MODEL_SCOPE
         ):
             weight_size = await asyncio.wait_for(
-                asyncio.to_thread(get_diffusion_model_weight_size, model, token),
+                get_diffusion_model_weight_size(model, token),
                 timeout=timeout_in_seconds,
             )
-        elif model.source == SourceEnum.LOCAL_PATH and os.path.exists(model.local_path):
-            weight_size = get_local_model_weight_size(model.local_path)
+        elif model.source == SourceEnum.LOCAL_PATH:
+            weight_size = await get_local_model_weight_size(model.local_path, workers)
     except asyncio.TimeoutError:
         logger.warning(f"Timeout when getting weight size for model {model.name}")
     except Exception as e:
@@ -313,39 +315,35 @@ async def estimate_diffusion_model_vram(
     return weight_size
 
 
-async def get_worker_model_instances(
-    engine: AsyncEngine, worker: Worker
+def get_worker_model_instances(
+    all_model_instances: List[ModelInstance], worker: Worker
 ) -> List[ModelInstance]:
     """
     Get all model instances related to the worker, including:
     1. Model instances assigned to this worker (main worker)
     2. Model instances that use this worker as a subordinate worker in distributed inference
     """
-    async with AsyncSession(engine) as session:
-        # Get all model instances from the database
-        all_model_instances = await ModelInstance.all(session)
+    # Filter to get only the relevant instances:
+    # 1. Instances assigned to this worker (main worker)
+    # 2. Instances that use this worker as a subordinate worker
+    relevant_instances = []
+    for model_instance in all_model_instances:
+        # Check if this is a main worker instance
+        if model_instance.worker_id == worker.id:
+            relevant_instances.append(model_instance)
+        # Check if this worker is used as a subordinate worker
+        elif (
+            model_instance.distributed_servers
+            and model_instance.distributed_servers.subordinate_workers
+        ):
+            for (
+                subordinate_worker
+            ) in model_instance.distributed_servers.subordinate_workers:
+                if subordinate_worker.worker_id == worker.id:
+                    relevant_instances.append(model_instance)
+                    break
 
-        # Filter to get only the relevant instances:
-        # 1. Instances assigned to this worker (main worker)
-        # 2. Instances that use this worker as a subordinate worker
-        relevant_instances = []
-        for model_instance in all_model_instances:
-            # Check if this is a main worker instance
-            if model_instance.worker_id == worker.id:
-                relevant_instances.append(model_instance)
-            # Check if this worker is used as a subordinate worker
-            elif (
-                model_instance.distributed_servers
-                and model_instance.distributed_servers.subordinate_workers
-            ):
-                for (
-                    subordinate_worker
-                ) in model_instance.distributed_servers.subordinate_workers:
-                    if subordinate_worker.worker_id == worker.id:
-                        relevant_instances.append(model_instance)
-                        break
-
-        return relevant_instances
+    return relevant_instances
 
 
 class ListMessageBuilder:
@@ -405,32 +403,64 @@ def get_model_num_attention_heads(pretrained_config) -> Optional[int]:
     return num_attention_heads
 
 
-def get_local_model_weight_size(local_path: str) -> int:
+async def get_local_model_weight_size(
+    local_path: str, workers: Optional[List[Worker]] = None
+) -> int:
     """
     Get the local model weight size in bytes. Estimate by the total size of files in the top-level (depth 1) of the directory.
+
+    If the model exists locally (on the server), calculate it locally.
+    Otherwise, if workers are provided, check if the model exists on any worker and get the size from there.
+
+    Args:
+        local_path: Path to the model directory
+        workers: Optional list of workers to check
+
+    Returns:
+        Total size in bytes
     """
-    total_size = 0
+    weight_file_extensions = (".safetensors", ".bin", ".pt", ".pth")
 
-    try:
-        with os.scandir(local_path) as entries:
-            for entry in entries:
-                if entry.is_file():
-                    total_size += entry.stat().st_size
-    except FileNotFoundError:
-        raise FileNotFoundError(f"The specified path '{local_path}' does not exist.")
-    except NotADirectoryError:
-        raise NotADirectoryError(
-            f"The specified path '{local_path}' is not a directory."
-        )
-    except PermissionError:
-        raise PermissionError(f"Permission denied when accessing '{local_path}'.")
+    if os.path.exists(local_path):
+        if not os.path.isdir(local_path):
+            raise NotADirectoryError(
+                f"The specified path '{local_path}' is not a directory."
+            )
 
-    return total_size
+        total_size = 0
+        try:
+            with os.scandir(local_path) as entries:
+                for entry in entries:
+                    if entry.is_file() and entry.name.endswith(weight_file_extensions):
+                        total_size += entry.stat().st_size
+            return total_size
+        except PermissionError:
+            raise PermissionError(f"Permission denied when accessing '{local_path}'.")
+        except Exception as e:
+            logger.error(f"Failed to calculate size locally for {local_path}: {e}")
+            raise e
+
+    if workers:
+        try:
+            async with WorkerFilesystemClient() as fs_client:
+                tasks = [
+                    fs_client.get_model_weight_size(worker, local_path)
+                    for worker in workers
+                ]
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+
+                for result in results:
+                    if isinstance(result, int):
+                        return result
+        except Exception as e:
+            logger.warning(f"Error checking model size on workers: {e}")
+
+    raise FileNotFoundError(f"The specified path '{local_path}' does not exist.")
 
 
-async def group_worker_gpu_by_memory(
-    engine: AsyncEngine,
+def group_worker_gpu_by_memory(
     workers: List[Worker],
+    model_instances: List[ModelInstance],
     ram_claim: int = 0,
     gpu_type: Optional[str] = None,
 ) -> List[List[WorkerGPUInfo]]:
@@ -466,7 +496,7 @@ async def group_worker_gpu_by_memory(
             continue
 
         # Get allocatable resources for this worker
-        allocatable = await get_worker_allocatable_resource(engine, worker, gpu_type)
+        allocatable = get_worker_allocatable_resource(model_instances, worker, gpu_type)
 
         if ram_not_enough(ram_claim, allocatable):
             continue
@@ -620,12 +650,10 @@ def sort_gpu_indexes_by_allocatable_rate(
     return sorted(allocatable_rate, key=lambda idx: allocatable_rate[idx], reverse=True)
 
 
-async def sort_selected_workers_by_gpu_type_and_resource(
+def sort_selected_workers_by_gpu_type_and_resource(
     workers: List[Worker],
     selected_gpu_indexes_by_gpu_type_and_worker: Dict[str, Dict[str, List[int]]],
-    get_worker_allocatable_resource: Callable[
-        [Worker, Optional[str]], Awaitable[Allocatable]
-    ],
+    get_worker_allocatable_resource: Callable[[Worker, Optional[str]], Allocatable],
 ) -> Dict[str, List[Worker]]:
     """
     Filter and sort selected workers by their GPU resource availability.
@@ -652,7 +680,7 @@ async def sort_selected_workers_by_gpu_type_and_resource(
                 continue
 
             # Sort selected GPUs by allocatable rate
-            allocatable = await get_worker_allocatable_resource(worker, gpu_type)
+            allocatable = get_worker_allocatable_resource(worker, gpu_type)
             sorted_gpu_indexes = [
                 idx
                 for idx in sort_gpu_indexes_by_allocatable_rate(

@@ -6,6 +6,7 @@ import os
 import queue
 from typing import List, Tuple, Optional
 from sqlmodel.ext.asyncio.session import AsyncSession
+from sqlalchemy.orm import selectinload
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
@@ -50,7 +51,7 @@ from gpustack.schemas.models import (
     DistributedServerCoordinateModeEnum,
 )
 from gpustack.server.bus import EventType
-from gpustack.server.db import get_engine
+from gpustack.server.db import async_session
 from gpustack.scheduler.calculator import (
     GPUOffloadEnum,
     calculate_model_resource_claim,
@@ -63,7 +64,6 @@ from gpustack.utils.hub import (
     has_diffusers_model_index,
 )
 from gpustack.utils.math import largest_power_of_2_leq
-from gpustack.utils.task import run_in_thread
 from sqlalchemy.orm.attributes import flag_modified
 
 logger = logging.getLogger(__name__)
@@ -78,7 +78,6 @@ class Scheduler:
         self._id = "model-instance-scheduler"
         self._config = cfg
         self._check_interval = check_interval
-        self._engine = get_engine()
         self._queue = AsyncUniqueQueue()
         self._cache_dir = None
 
@@ -116,7 +115,7 @@ class Scheduler:
         logger.info("Scheduler started.")
 
         # scheduler job trigger by event.
-        async for event in ModelInstance.subscribe(self._engine, source="scheduler"):
+        async for event in ModelInstance.subscribe(source="scheduler"):
             if event.type != EventType.CREATED:
                 continue
 
@@ -127,7 +126,7 @@ class Scheduler:
         Get the pending model instances.
         """
         try:
-            async with AsyncSession(self._engine) as session:
+            async with async_session() as session:
                 instances = await ModelInstance.all(session)
                 tasks = []
                 for instance in instances:
@@ -143,7 +142,7 @@ class Scheduler:
         """
         Evaluate the model instance's metadata.
         """
-        async with AsyncSession(self._engine) as session:
+        async with async_session() as session:
             try:
                 instance = await ModelInstance.one_by_id(session, instance.id)
 
@@ -179,7 +178,9 @@ class Scheduler:
                         )
                     else:
                         should_update_model = await evaluate_pretrained_config(
-                            model, raise_raw=True
+                            model,
+                            session=session,
+                            raise_raw=True,
                         )
                 except Exception as e:
                     # Even if the evaluation failed, we still want to proceed to deployment.
@@ -285,7 +286,7 @@ class Scheduler:
 
         state_message = ""
 
-        async with AsyncSession(self._engine) as session:
+        async with async_session() as session:
             workers = await Worker.all(session)
             if len(workers) == 0:
                 state_message = "No available workers"
@@ -301,12 +302,16 @@ class Scheduler:
                 )
                 return
 
+            model_instances = await ModelInstance.all(
+                session, options=[selectinload(ModelInstance.model)]
+            )
+
             candidate = None
             messages = []
             if workers and model:
                 try:
                     candidate, messages = await find_candidate(
-                        self._config, model, workers
+                        self._config, model, workers, model_instances
                     )
                 except Exception as e:
                     state_message = f"Failed to find candidate: {e}"
@@ -369,6 +374,7 @@ async def find_candidate(
     config: Config,
     model: Model,
     workers: List[Worker],
+    model_instances: List[ModelInstance],
 ) -> Tuple[Optional[ModelInstanceScheduleCandidate], List[str]]:
     """
     Find a schedule candidate for the model instance.
@@ -398,19 +404,29 @@ async def find_candidate(
     # Initialize candidate selector.
     try:
         if is_gguf_model(model):
-            candidates_selector = GGUFResourceFitSelector(model, config.cache_dir)
+            candidates_selector = GGUFResourceFitSelector(
+                model, model_instances, config.cache_dir
+            )
         elif model.backend == BackendEnum.VOX_BOX:
             candidates_selector = VoxBoxResourceFitSelector(
-                config, model, config.cache_dir
+                config, model, model_instances, config.cache_dir
             )
         elif model.backend == BackendEnum.ASCEND_MINDIE:
-            candidates_selector = AscendMindIEResourceFitSelector(config, model)
+            candidates_selector = AscendMindIEResourceFitSelector(
+                config, model, model_instances
+            )
         elif model.backend == BackendEnum.VLLM:
-            candidates_selector = VLLMResourceFitSelector(config, model)
+            candidates_selector = VLLMResourceFitSelector(
+                config, model, model_instances
+            )
         elif model.backend == BackendEnum.SGLANG:
-            candidates_selector = SGLangResourceFitSelector(config, model)
+            candidates_selector = SGLangResourceFitSelector(
+                config, model, model_instances
+            )
         else:
-            candidates_selector = CustomBackendResourceFitSelector(config, model)
+            candidates_selector = CustomBackendResourceFitSelector(
+                config, model, model_instances
+            )
     except Exception as e:
         return None, [f"Failed to initialize {model.backend} candidates selector: {e}"]
 
@@ -418,7 +434,7 @@ async def find_candidate(
     candidates = await candidates_selector.select_candidates(workers)
 
     # Score candidates.
-    placement_scorer = PlacementScorer(model)
+    placement_scorer = PlacementScorer(model, model_instances)
     candidates = await placement_scorer.score(candidates)
 
     # Pick the highest score candidate.
@@ -567,8 +583,8 @@ async def evaluate_diffusion_model(model: Model):
         return False
 
     hf_token = get_global_config().huggingface_token
-    is_diffusers = await run_in_thread(
-        has_diffusers_model_index, timeout=10, model=model, token=hf_token
+    is_diffusers = await asyncio.wait_for(
+        has_diffusers_model_index(model, token=hf_token), timeout=10
     )
     if is_diffusers:
         model.categories = [CategoryEnum.IMAGE]
@@ -576,7 +592,12 @@ async def evaluate_diffusion_model(model: Model):
     return False
 
 
-async def evaluate_pretrained_config(model: Model, raise_raw: bool = False) -> bool:
+async def evaluate_pretrained_config(
+    model: Model,
+    session: Optional[AsyncSession] = None,
+    workers: Optional[List[Worker]] = None,
+    raise_raw: bool = False,
+) -> bool:
     """
     evaluate the model's pretrained config to determine its type.
     Args:
@@ -596,8 +617,10 @@ async def evaluate_pretrained_config(model: Model, raise_raw: bool = False) -> b
     architectures = get_vllm_override_architectures(model)
     if not architectures:
         try:
-            pretrained_config = await run_in_thread(
-                get_pretrained_config_with_fallback, timeout=30, model=model
+            pretrained_config = await get_pretrained_config_with_fallback(
+                model,
+                session=session,
+                workers=workers,
             )
         except ValueError as e:
             # Skip value error exceptions and defaults to LLM catagory for certain cases.

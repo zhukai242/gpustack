@@ -14,9 +14,9 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.exc import FlushError
 from sqlalchemy.orm.state import InstanceState
-from sqlalchemy.ext.asyncio import AsyncEngine
 from gpustack.schemas.common import PaginatedList, Pagination
 from gpustack.server.bus import Event, EventType, event_bus
+from gpustack.server.db import async_session
 
 
 logger = logging.getLogger(__name__)
@@ -110,13 +110,20 @@ class ActiveRecordMixin:
         return result.first()
 
     @classmethod
-    async def one_by_id(cls, session: AsyncSession, id: int, for_update: bool = False):
+    async def one_by_id(
+        cls,
+        session: AsyncSession,
+        id: int,
+        for_update: bool = False,
+        options: Optional[List] = None,
+    ):
         """Return the object with the given id. Return None if not found.
 
         If `for_update` is True, the row will be locked until the end of the transaction.
+        If `options` is provided, it will be passed to the query for eager loading relationships.
         """
 
-        return await session.get(cls, id, with_for_update=for_update)
+        return await session.get(cls, id, with_for_update=for_update, options=options)
 
     @classmethod
     async def first_by_field(cls, session: AsyncSession, field: str, value: Any):
@@ -125,10 +132,16 @@ class ActiveRecordMixin:
         return await cls.first_by_fields(session, {field: value})
 
     @classmethod
-    async def one_by_field(cls, session: AsyncSession, field: str, value: Any):
+    async def one_by_field(
+        cls,
+        session: AsyncSession,
+        field: str,
+        value: Any,
+        options: Optional[List] = None,
+    ):
         """Return the object with the given field and value. Return None if not found."""
 
-        return await cls.one_by_fields(session, {field: value})
+        return await cls.one_by_fields(session, {field: value}, options=options)
 
     @classmethod
     async def first_by_fields(cls, session: AsyncSession, fields: dict):
@@ -150,7 +163,9 @@ class ActiveRecordMixin:
         return result.first()
 
     @classmethod
-    async def one_by_fields(cls, session: AsyncSession, fields: dict):
+    async def one_by_fields(
+        cls, session: AsyncSession, fields: dict, options: Optional[List] = None
+    ):
         """Return the object with the given fields and values. Return None if not found."""
 
         statement = select(cls)
@@ -161,6 +176,9 @@ class ActiveRecordMixin:
             else:
                 # 使用 == 操作符处理单个值
                 statement = statement.where(getattr(cls, key) == value)
+
+        if options:
+            statement = statement.options(*options)
 
         result = await session.exec(statement)
         return result.first()
@@ -187,6 +205,7 @@ class ActiveRecordMixin:
         fields: Optional[dict] = None,
         fuzzy_fields: Optional[dict] = None,
         extra_conditions: Optional[List] = None,
+        options: Optional[List] = None,
     ):
         if fields is None:
             fields = {}
@@ -213,6 +232,9 @@ class ActiveRecordMixin:
 
         if extra_conditions:
             statement = statement.where(and_(*extra_conditions))
+
+        if options:
+            statement = statement.options(*options)
 
         result = await session.exec(statement)
         return result.all()
@@ -803,10 +825,12 @@ class ActiveRecordMixin:
         return any(rel.cascade.delete for rel in self.__mapper__.relationships)
 
     @classmethod
-    async def all(cls, session: AsyncSession):
+    async def all(cls, session: AsyncSession, options: Optional[List] = None):
         """Return all objects of the model."""
-
-        result = await session.exec(select(cls))
+        statement = select(cls)
+        if options:
+            statement = statement.options(*options)
+        result = await session.exec(statement)
         return result.all()
 
     @classmethod
@@ -836,7 +860,7 @@ class ActiveRecordMixin:
 
     @classmethod
     async def subscribe(
-        cls, engine: AsyncEngine, source: str
+        cls, source: str, options: Optional[List] = None
     ) -> AsyncGenerator[Event, None]:
         topic = cls.__name__.lower()
         subscriber = event_bus.subscribe(cls.__name__.lower())
@@ -846,10 +870,12 @@ class ActiveRecordMixin:
             topic,
             id(subscriber),
         )
-        async with AsyncSession(engine) as session:
-            items = await cls.all(session)
-            for item in items:
-                yield Event(type=EventType.CREATED, data=item)
+
+        async with async_session() as session:
+            initial_items = await cls.all(session, options=options)
+
+        for item in initial_items:
+            yield Event(type=EventType.CREATED, data=item)
 
         heartbeat_interval = timedelta(seconds=15)
         last_event_time = datetime.now(timezone.utc)
@@ -874,14 +900,21 @@ class ActiveRecordMixin:
     @classmethod
     async def streaming(
         cls,
-        engine: AsyncEngine,
         fields: Optional[dict] = None,
         fuzzy_fields: Optional[dict] = None,
         filter_func: Optional[Callable[[Any], bool]] = None,
+        options: Optional[List] = None,
     ) -> AsyncGenerator[str, None]:
-        """Stream events matching the given criteria as JSON strings."""
+        """Stream events matching the given criteria as JSON strings.
+
+        Args:
+            fields: Exact match filters as key-value pairs
+            fuzzy_fields: Fuzzy match filters
+            filter_func: Optional filter function to apply to event data
+            options: SQLAlchemy options for eager loading relationships (e.g., selectinload)
+        """
         try:
-            async for event in cls.subscribe(engine, source="streaming"):
+            async for event in cls.subscribe(source="streaming", options=options):
                 if event.type == EventType.HEARTBEAT:
                     yield "\n\n"
                     continue

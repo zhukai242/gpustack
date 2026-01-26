@@ -1,4 +1,5 @@
 from typing import Callable
+from cachetools import TTLCache
 from prometheus_client.core import (  # noqa: F401
     GaugeMetricFamily,
     InfoMetricFamily,
@@ -56,6 +57,9 @@ class RuntimeMetricsAggregator:
         self._metrics_client = RuntimeMetricsClient(self._metrics_client_config)
         self._worker_id_getter = worker_id_getter
         self._clientset = clientset
+
+        # Cache for metrics config (refresh every 300 seconds)
+        self._metrics_config_cache = TTLCache(maxsize=1, ttl=300)
 
     def aggregate(self):
         """
@@ -341,7 +345,7 @@ class RuntimeMetricsAggregator:
     def _get_online_metrics_config(self):
         try:
             resp = self._clientset.http_client.get_httpx_client().get(
-                f"{self._clientset.base_url}/metrics/config", timeout=5
+                f"{self._clientset.base_url}/v2/metrics/config", timeout=5
             )
             if resp.status_code == 404:
                 return None
@@ -364,11 +368,24 @@ class RuntimeMetricsAggregator:
             return None
 
     def _get_metrics_config(self):
+        """Get metrics config with automatic caching (300 seconds TTL)."""
+        try:
+            return self._metrics_config_cache["config"]
+        except KeyError:
+            # Cache miss, fetch fresh config
+            pass
+
         online_config = self._get_online_metrics_config()
         if online_config:
+            logger.debug("Updated online metrics config cache")
+            self._metrics_config_cache["config"] = online_config
             return online_config
         else:
-            return get_builtin_metrics_config()
+            builtin_config = get_builtin_metrics_config()
+            logger.debug("Using builtin metrics config")
+            # Cache for 300 seconds
+            self._metrics_config_cache["config"] = builtin_config
+            return builtin_config
 
 
 _METRIC_FAMILY_CLASS = {

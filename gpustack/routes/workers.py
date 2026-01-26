@@ -14,7 +14,6 @@ from gpustack.api.exceptions import (
 from gpustack.config.config import get_global_config
 from gpustack.server.deps import (
     SessionDep,
-    EngineDep,
     CurrentUserDep,
 )
 from gpustack.schemas.workers import (
@@ -114,7 +113,6 @@ def calculate_gpu_activation_status(worker, worker_activations):
 @router.get("", response_model=WorkersPublic)
 async def get_workers(
     user: CurrentUserDep,
-    engine: EngineDep,
     session: SessionDep,
     params: WorkerListParams = Depends(),
     name: str = None,
@@ -137,7 +135,7 @@ async def get_workers(
 
     if params.watch:
         return StreamingResponse(
-            Worker.streaming(engine, fields=fields, fuzzy_fields=fuzzy_fields),
+            Worker.streaming(fields=fields, fuzzy_fields=fuzzy_fields),
             media_type="text/event-stream",
         )
     if me and user.worker is not None:

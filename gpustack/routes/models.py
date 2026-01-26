@@ -6,6 +6,7 @@ from gpustack_runtime.detector import ManufacturerEnum
 from sqlalchemy import bindparam, cast
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.mysql import JSON
+from sqlalchemy.orm import selectinload
 from sqlmodel import and_, col, or_, func
 from sqlmodel.ext.asyncio.session import AsyncSession
 from enum import Enum
@@ -25,7 +26,7 @@ from gpustack.schemas.models import (
     ModelListParams,
 )
 from gpustack.schemas.workers import GPUDeviceInfo, Worker
-from gpustack.server.deps import ListParamsDep, SessionDep, EngineDep, CurrentUserDep
+from gpustack.server.deps import ListParamsDep, SessionDep, CurrentUserDep
 from gpustack.schemas.models import (
     Model,
     ModelCreate,
@@ -60,7 +61,6 @@ class ModelStateFilterEnum(str, Enum):
 
 @router.get("", response_model=ModelsPublic)
 async def get_models(
-    engine: EngineDep,
     session: SessionDep,
     params: ModelListParams = Depends(),
     state: Optional[ModelStateFilterEnum] = Query(
@@ -73,7 +73,6 @@ async def get_models(
     backend: Optional[str] = Query(None, description="Filter by backend."),
 ):
     return await _get_models(
-        engine=engine,
         session=session,
         params=params,
         state=state,
@@ -85,7 +84,6 @@ async def get_models(
 
 
 async def _get_models(
-    engine: EngineDep,
     session: SessionDep,
     params: ModelListParams,
     state: Optional[ModelStateFilterEnum] = None,
@@ -113,7 +111,6 @@ async def _get_models(
     if params.watch:
         return StreamingResponse(
             target_class.streaming(
-                engine,
                 fields=fields,
                 fuzzy_fields=fuzzy_fields,
                 filter_func=lambda data: categories_filter(data, categories),
@@ -233,17 +230,15 @@ async def _get_model(
 
 
 @router.get("/{id}/instances", response_model=ModelInstancesPublic)
-async def get_model_instances(
-    engine: EngineDep, session: SessionDep, id: int, params: ListParamsDep
-):
-    model = await Model.one_by_id(session, id)
+async def get_model_instances(session: SessionDep, id: int, params: ListParamsDep):
+    model = await Model.one_by_id(session, id, options=[selectinload(Model.instances)])
     if not model:
         raise NotFoundException(message="Model not found")
 
     if params.watch:
         fields = {"model_id": id}
         return StreamingResponse(
-            ModelInstance.streaming(engine, fields=fields),
+            ModelInstance.streaming(fields=fields),
             media_type="text/event-stream",
         )
 
@@ -456,7 +451,7 @@ async def update_model(session: SessionDep, id: int, model_in: ModelUpdate):
 
 @router.delete("/{id}")
 async def delete_model(session: SessionDep, id: int):
-    model = await Model.one_by_id(session, id)
+    model = await Model.one_by_id(session, id, options=[selectinload(Model.users)])
     if not model:
         raise NotFoundException(message="Model not found")
 
@@ -482,7 +477,9 @@ def model_access_list(model: Model) -> List[ModelUserAccessExtended]:
 
 @router.get("/{id}/access", response_model=ModelAccessList)
 async def get_model_access(session: SessionDep, id: int):
-    model: Model = await Model.one_by_id(session, id)
+    model: Model = await Model.one_by_id(
+        session, id, options=[selectinload(Model.users)]
+    )
     if not model:
         raise NotFoundException(message="Model not found")
 
@@ -493,7 +490,7 @@ async def get_model_access(session: SessionDep, id: int):
 async def add_model_access(
     session: SessionDep, id: int, access_request: ModelAccessUpdate
 ):
-    model = await Model.one_by_id(session, id)
+    model = await Model.one_by_id(session, id, options=[selectinload(Model.users)])
     if not model:
         raise NotFoundException(message="Model not found")
     extra_conditions = [
@@ -540,7 +537,6 @@ my_models_router = APIRouter()
 @my_models_router.get("", response_model=ModelsPublic)
 async def get_my_models(
     user: CurrentUserDep,
-    engine: EngineDep,
     session: SessionDep,
     params: ModelListParams = Depends(),
     state: Optional[ModelStateFilterEnum] = Query(
@@ -559,7 +555,6 @@ async def get_my_models(
         user_id = user.id
 
     return await _get_models(
-        engine=engine,
         session=session,
         params=params,
         state=state,

@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import os
 from typing import Dict, List, Optional, Tuple
 
 from gpustack_runtime.deployer.__utils__ import compare_versions
@@ -24,6 +23,7 @@ from gpustack.scheduler.model_registry import is_multimodal_model
 from gpustack.schemas.models import (
     ComputedResourceClaim,
     Model,
+    ModelInstance,
     SourceEnum,
     ModelInstanceSubordinateWorker,
 )
@@ -49,8 +49,9 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
         self,
         config: Config,
         model: Model,
+        model_instances: List[ModelInstance],
     ):
-        super().__init__(config, model)
+        super().__init__(config, model, model_instances)
 
         # Diagnostic message to be set to the model instance.
         self._diagnostic_messages: List[str] = []
@@ -129,7 +130,8 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
         return self._diagnostic_messages
 
     async def select_candidates(
-        self, workers: List[Worker]
+        self,
+        workers: List[Worker],
     ) -> List[ModelInstanceScheduleCandidate]:
         """
         Select available deployment candidates based on the resource requirements.
@@ -140,7 +142,7 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
         """
 
         # Estimate resource usage.
-        estimated_usage = await self._estimate_usage()
+        estimated_usage = await self._estimate_usage(workers)
 
         # Filter workers based on estimated usage.
         candidates = await self._construct_candidates(estimated_usage, workers)
@@ -155,7 +157,9 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
             )
         return candidates
 
-    async def _estimate_usage(self) -> RequestEstimateUsage:  # noqa: C901
+    async def _estimate_usage(  # noqa: C901
+        self, workers: Optional[List[Worker]] = None
+    ) -> RequestEstimateUsage:
         """
         Estimate the resource usage of the model instance.
 
@@ -215,8 +219,7 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
                 )
             elif source == SourceEnum.LOCAL_PATH:
                 local_path = self._model.local_path
-                if os.path.exists(local_path):
-                    vram_weight = get_local_model_weight_size(local_path)
+                vram_weight = await get_local_model_weight_size(local_path, workers)
         except asyncio.TimeoutError:
             logger.warning(
                 f"Timeout when getting weight size for model {self._model.name}"
@@ -444,11 +447,11 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
             )
         return available_worker_devices_idx
 
-    async def _manual_select_candidates(
+    def _manual_select_candidates(
         self, workers: List[Worker], request_usage: RequestEstimateUsage
     ) -> List[ModelInstanceScheduleCandidate]:
         event_collector = EventCollector(self._model, logger)
-        candidates = await self._find_manual_gpu_selection_candidates(
+        candidates = self._find_manual_gpu_selection_candidates(
             workers,
             {"*": self._serving_params.npu_memory_fraction},
             request_usage,
@@ -878,7 +881,7 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
 
         # Statisfy the selected devices count, if specified.
         if self._model.gpu_selector and self._model.gpu_selector.gpu_ids:
-            return await self._manual_select_candidates(
+            return self._manual_select_candidates(
                 workers,
                 request_usage,
             )
@@ -920,7 +923,7 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
         if worker.id in self.__worker_alloc_idx:
             return self.__worker_alloc_idx[worker.id]
 
-        worker_alloc = await get_worker_allocatable_resource(self._engine, worker)
+        worker_alloc = get_worker_allocatable_resource(self._model_instances, worker)
         if not worker_alloc:
             logger.warning(f"Worker {worker.name} has no allocatable resources.")
             worker_alloc = Allocatable(ram=0, vram={0: 0})

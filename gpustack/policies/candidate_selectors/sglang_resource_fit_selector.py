@@ -2,7 +2,6 @@ import logging
 from collections import defaultdict
 from typing import List, Optional, Dict, Tuple
 from transformers.utils import strtobool
-from sqlalchemy.ext.asyncio import AsyncEngine
 
 from gpustack.policies.base import ModelInstanceScheduleCandidate
 from gpustack.policies.candidate_selectors.base_candidate_selector import (
@@ -33,6 +32,7 @@ from gpustack.policies.utils import (
 from gpustack.schemas.models import (
     ComputedResourceClaim,
     Model,
+    ModelInstance,
     ModelInstanceSubordinateWorker,
     CategoryEnum,
 )
@@ -53,8 +53,9 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
         self,
         cfg: Config,
         model: Model,
+        model_instances: List[ModelInstance],
     ):
-        super().__init__(cfg, model)
+        super().__init__(cfg, model, model_instances)
 
         self._vram_claim = 0
         self._ram_claim = 0
@@ -261,12 +262,12 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
         """
         if self._is_diffusion:
             self._vram_claim = await estimate_diffusion_model_vram(
-                self._model, self._config.huggingface_token
+                self._model, self._config.huggingface_token, workers
             )
         else:
-            await self.cal_mem_fraction_static(workers)
+            self.cal_mem_fraction_static(workers)
             self._vram_claim = await estimate_model_vram(
-                self._model, self._config.huggingface_token
+                self._model, self._config.huggingface_token, workers
             )
         self._ram_claim = get_model_ram_claim(self._model)
 
@@ -310,7 +311,7 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
                 f"SGLang model {self._model.readable_source}, filter candidates with resource fit selector: {candidate_func.__name__}"
             )
 
-            candidates = await candidate_func(workers)
+            candidates = candidate_func(workers)
 
             if len(candidates) == 1 and candidates[0].overcommit:
                 self._set_messages()
@@ -321,7 +322,7 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
         self._set_messages()
         return []
 
-    async def cal_mem_fraction_static(self, workers: List[Worker]):
+    def cal_mem_fraction_static(self, workers: List[Worker]):
         """Calculate mem_fraction_static for SGLang for all type gpus."""
         workers_by_gpu_type = group_workers_by_gpu_type(workers)
         valid_gpu_types = (
@@ -333,12 +334,12 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
             gpu_type: (
                 self._param_mem_fraction_static
                 if self._param_mem_fraction_static > 0
-                else await MemFractionStaticCalculator(
+                else MemFractionStaticCalculator(
                     self._model,
+                    self._model_instances,
                     self._model_params,
                     gpu_type,
                     self._selected_gpu_indexes_by_gpu_type_and_worker,
-                    self._engine,
                 )._cal_mem_fraction_static(workers_of_type)
             )
             for gpu_type, workers_of_type in workers_by_gpu_type.items()
@@ -369,7 +370,7 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
 
         return False
 
-    async def find_manual_gpu_selection_candidates(
+    def find_manual_gpu_selection_candidates(
         self, workers: List[Worker]
     ) -> List[ModelInstanceScheduleCandidate]:
         request = RequestEstimateUsage(
@@ -378,14 +379,14 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
         )
         if self._is_diffusion:
             request.vram = request.vram * self._gpu_count
-        return await self._find_manual_gpu_selection_candidates(
+        return self._find_manual_gpu_selection_candidates(
             workers,
             self._mem_fraction_static_by_gpu_type,
             request,
             self._event_collector,
         )
 
-    async def find_single_worker_single_gpu_full_offloading_candidates(
+    def find_single_worker_single_gpu_full_offloading_candidates(
         self, workers: List[Worker]
     ) -> List[ModelInstanceScheduleCandidate]:
         """
@@ -401,14 +402,16 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
         workers_by_gpu_type = group_workers_by_gpu_type(workers)
         for gpu_type, workers_of_type in workers_by_gpu_type.items():
             for worker in workers_of_type:
-                worker_candidates = await self._find_single_worker_single_gpu_full_offloading_candidates(
-                    worker, gpu_type
+                worker_candidates = (
+                    self._find_single_worker_single_gpu_full_offloading_candidates(
+                        worker, gpu_type
+                    )
                 )
                 candidates.extend(worker_candidates)
 
         return candidates
 
-    async def _find_single_worker_single_gpu_full_offloading_candidates(
+    def _find_single_worker_single_gpu_full_offloading_candidates(
         self, worker: Worker, gpu_type: Optional[str] = None
     ) -> List[ModelInstanceScheduleCandidate]:
         """
@@ -418,7 +421,7 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
 
         candidates = []
 
-        allocatable = await self.get_worker_allocatable_resource(worker, gpu_type)
+        allocatable = self.get_worker_allocatable_resource(worker, gpu_type)
 
         if ram_not_enough(self._ram_claim, allocatable):
             return []
@@ -455,7 +458,7 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
                 if self._is_diffusion
                 else None
             )
-            vram_claim = await self._get_worker_resource_claim(
+            vram_claim = self._get_worker_resource_claim(
                 worker,
                 [gpu_index],
                 (
@@ -499,7 +502,7 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
 
         return candidates
 
-    async def find_single_worker_multi_gpu_full_offloading_candidates(
+    def find_single_worker_multi_gpu_full_offloading_candidates(
         self, workers: List[Worker]
     ) -> List[ModelInstanceScheduleCandidate]:
         """
@@ -512,7 +515,7 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
         for gpu_type, workers_of_type in workers_by_gpu_type.items():
             for worker in workers_of_type:
                 worker_candidates = (
-                    await self._find_single_worker_multi_gpu_full_offloading_candidates(
+                    self._find_single_worker_multi_gpu_full_offloading_candidates(
                         worker, gpu_type
                     )
                 )
@@ -520,7 +523,7 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
 
         return candidates
 
-    async def _find_single_worker_multi_gpu_full_offloading_candidates(  # noqa: C901
+    def _find_single_worker_multi_gpu_full_offloading_candidates(  # noqa: C901
         self, worker: Worker, gpu_type: Optional[str] = None
     ) -> List[ModelInstanceScheduleCandidate]:
         """Find single worker multi GPU candidates for a specific worker."""
@@ -528,8 +531,11 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
             return []
 
         # SGLang performs VRAM balancing checks. We group all GPUs based on available VRAM capacity
-        gpu_group = await group_worker_gpu_by_memory(
-            self._engine, [worker], ram_claim=self._ram_claim, gpu_type=gpu_type
+        gpu_group = group_worker_gpu_by_memory(
+            [worker],
+            model_instances=self._model_instances,
+            ram_claim=self._ram_claim,
+            gpu_type=gpu_type,
         )
 
         for info in gpu_group:
@@ -654,7 +660,7 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
 
         return []
 
-    async def find_multi_worker_multi_gpu_candidates(
+    def find_multi_worker_multi_gpu_candidates(
         self, workers: List[Worker], gpu_type: Optional[str] = None
     ) -> List[ModelInstanceScheduleCandidate]:
         """
@@ -666,9 +672,9 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
 
         workers_by_gpu_type = group_workers_by_gpu_type(workers)
         for gpu_type, workers_of_type in workers_by_gpu_type.items():
-            gpu_group = await group_worker_gpu_by_memory(
-                self._engine,
+            gpu_group = group_worker_gpu_by_memory(
                 workers_of_type,
+                model_instances=self._model_instances,
                 ram_claim=self._ram_claim,
                 gpu_type=gpu_type,
             )
@@ -700,10 +706,8 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
                 if not first_cnt:
                     continue
 
-                workers_candidates = (
-                    await self.auto_select_multi_worker_multi_gpu_candidates(
-                        workers_of_type, gpu_type
-                    )
+                workers_candidates = self.auto_select_multi_worker_multi_gpu_candidates(
+                    workers_of_type, gpu_type
                 )
                 if workers_candidates:
                     candidates.extend(workers_candidates)
@@ -711,7 +715,7 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
 
         return candidates
 
-    async def auto_select_multi_worker_multi_gpu_candidates(
+    def auto_select_multi_worker_multi_gpu_candidates(
         self, workers: List[Worker], gpu_type: Optional[str] = None
     ) -> List[ModelInstanceScheduleCandidate]:
         """Auto select multi worker multi GPU candidates for SGLang."""
@@ -744,9 +748,7 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
             gpu_sum = 0
             vram_sum = 0
             for worker in worker_group:
-                allocatable = await self.get_worker_allocatable_resource(
-                    worker, gpu_type
-                )
+                allocatable = self.get_worker_allocatable_resource(worker, gpu_type)
 
                 if ram_not_enough(self._ram_claim, allocatable):
                     # The RAM resource(for extended KV cache) is required per worker.
@@ -884,6 +886,7 @@ def _create_candidate(
 
 class MemFractionStaticCalculator:
     _model: Model
+    _model_instances: List[ModelInstance]
     _gpu_type: Optional[str]
     _chunked_prefill_size: Optional[int]
     _cuda_graph_max_bs: Optional[int]
@@ -896,26 +899,24 @@ class MemFractionStaticCalculator:
 
     # Model hyperparameters.
     _model_params: ModelParameters
-    # Database engine.
-    _engine: AsyncEngine
 
     _selected_gpu_indexes_by_gpu_type_and_worker: Dict[str, Dict[int, List[int]]] = {}
 
     def __init__(
         self,
         model: Model,
+        model_instances: List[ModelInstance],
         model_params: ModelParameters,
         gpu_type: str,
         selected_gpu_indexes_by_gpu_type_and_worker: Dict[str, Dict[int, List[int]]],
-        engine: AsyncEngine,
     ) -> None:
         self._model = model
+        self._model_instances = model_instances
         self._model_params = model_params
         self._gpu_type = gpu_type
         self._selected_gpu_indexes_by_gpu_type_and_worker = (
             selected_gpu_indexes_by_gpu_type_and_worker
         )
-        self._engine = engine
 
         self._chunked_prefill_size = find_int_parameter(
             self._model.backend_parameters, ["chunked-prefill-size"]
@@ -967,9 +968,7 @@ class MemFractionStaticCalculator:
             ]
         )
 
-    async def _cal_mem_fraction_static(  # noqa: C901
-        self, workers: List[Worker]
-    ) -> float:
+    def _cal_mem_fraction_static(self, workers: List[Worker]) -> float:  # noqa: C901
         """
         Adapted from sglang's server_args memory fraction logic.
         Logic of SGLang set default mem_fraction_static:
@@ -982,7 +981,7 @@ class MemFractionStaticCalculator:
             return
 
         is_npu = self._is_npu(workers)
-        gpu_mem_bytes = await self._get_min_gpu_sum(workers)
+        gpu_mem_bytes = self._get_min_gpu_sum(workers)
         gpu_mem = byte_to_mib(gpu_mem_bytes)
         # Step 1: Use the minimum GPU memory of all workers to calculate _chunked_prefill_size and _cuda_graph_max_bs.
         if gpu_mem:
@@ -1180,7 +1179,7 @@ class MemFractionStaticCalculator:
         )
         return is_npu
 
-    async def _get_min_gpu_sum(self, workers: List[Worker]) -> int:
+    def _get_min_gpu_sum(self, workers: List[Worker]) -> int:
         """
         Get the min GPU memory of input workers
         """
@@ -1199,8 +1198,8 @@ class MemFractionStaticCalculator:
                 ).get(worker.name)
 
                 if self._model.gpu_selector.gpus_per_replica:
-                    allocatable = await get_worker_allocatable_resource(
-                        self._engine, worker, self._gpu_type
+                    allocatable = get_worker_allocatable_resource(
+                        self._model_instances, worker, self._gpu_type
                     )
                     sorted_gpu_indexes = [
                         idx

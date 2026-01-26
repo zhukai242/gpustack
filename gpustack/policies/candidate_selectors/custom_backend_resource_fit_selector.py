@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import os
 from typing import Dict, List, Optional
 
 from gpustack.policies.base import (
@@ -25,6 +24,7 @@ from gpustack.schemas.models import (
     CategoryEnum,
     ComputedResourceClaim,
     Model,
+    ModelInstance,
     SourceEnum,
 )
 from gpustack.schemas.workers import Worker
@@ -39,7 +39,7 @@ EVENT_ACTION_CPU_ONLY = "backend_cpu_only_scheduling_msg"
 
 
 async def estimate_custom_backend_vram(
-    model: Model, token: Optional[str] = None
+    model: Model, token: Optional[str] = None, workers: Optional[List[Worker]] = None
 ) -> int:
     """
     Estimate the VRAM requirement in bytes for custom backends.
@@ -73,8 +73,8 @@ async def estimate_custom_backend_vram(
                 asyncio.to_thread(get_model_weight_size, model, token),
                 timeout=timeout_in_seconds,
             )
-        elif model.source == SourceEnum.LOCAL_PATH and os.path.exists(model.local_path):
-            weight_size = get_local_model_weight_size(model.local_path)
+        elif model.source == SourceEnum.LOCAL_PATH:
+            weight_size = await get_local_model_weight_size(model.local_path, workers)
     except asyncio.TimeoutError:
         logger.warning(f"Timeout when getting weight size for model {model.name}")
     except Exception as e:
@@ -94,8 +94,8 @@ class CustomBackendResourceFitSelector(ScheduleCandidatesSelector):
     - Supports both GPU and CPU-only deployments
     """
 
-    def __init__(self, cfg: Config, model: Model):
-        super().__init__(cfg, model, parse_model_params=False)
+    def __init__(self, cfg: Config, model: Model, model_instances: List[ModelInstance]):
+        super().__init__(cfg, model, model_instances, parse_model_params=False)
         self._event_collector = EventCollector(model, logger)
         self._messages = []
 
@@ -150,7 +150,7 @@ class CustomBackendResourceFitSelector(ScheduleCandidatesSelector):
         """
         # Estimate VRAM requirements using actual model weight
         self._vram_claim = await estimate_custom_backend_vram(
-            self._model, self._config.huggingface_token
+            self._model, self._config.huggingface_token, workers
         )
 
         # Estimate RAM requirements (conservative estimate)
@@ -194,7 +194,7 @@ class CustomBackendResourceFitSelector(ScheduleCandidatesSelector):
                 f"trying candidate selector: {candidate_func.__name__}"
             )
 
-            candidates = await candidate_func(workers)
+            candidates = candidate_func(workers)
             if candidates:
                 # Prepare diagnostic messages for the user
                 self._set_messages()
@@ -215,7 +215,7 @@ class CustomBackendResourceFitSelector(ScheduleCandidatesSelector):
 
         return False
 
-    async def find_manual_gpu_selection_candidates(
+    def find_manual_gpu_selection_candidates(
         self, workers: List[Worker]
     ) -> List[ModelInstanceScheduleCandidate]:
         # Single worker scenarios
@@ -224,7 +224,7 @@ class CustomBackendResourceFitSelector(ScheduleCandidatesSelector):
                 ram=self._ram_claim,
                 vram=self._vram_claim,
             )
-            return await self._find_manual_gpu_selection_candidates(
+            return self._find_manual_gpu_selection_candidates(
                 workers, {"*": 0}, request, self._event_collector
             )
 
@@ -242,7 +242,7 @@ class CustomBackendResourceFitSelector(ScheduleCandidatesSelector):
             )
         return []
 
-    async def find_single_worker_single_gpu_candidates(
+    def find_single_worker_single_gpu_candidates(
         self, workers: List[Worker]
     ) -> List[ModelInstanceScheduleCandidate]:
         """
@@ -257,8 +257,8 @@ class CustomBackendResourceFitSelector(ScheduleCandidatesSelector):
                 if not worker.status or not worker.status.gpu_devices:
                     continue
 
-                allocatable = await get_worker_allocatable_resource(
-                    self._engine, worker, gpu_type
+                allocatable = get_worker_allocatable_resource(
+                    self._model_instances, worker, gpu_type
                 )
 
                 for gpu_device in worker.status.gpu_devices:
@@ -292,7 +292,7 @@ class CustomBackendResourceFitSelector(ScheduleCandidatesSelector):
             )
         return candidates
 
-    async def find_single_worker_multi_gpu_candidates(
+    def find_single_worker_multi_gpu_candidates(
         self, workers: List[Worker]
     ) -> List[ModelInstanceScheduleCandidate]:
         """
@@ -311,8 +311,8 @@ class CustomBackendResourceFitSelector(ScheduleCandidatesSelector):
                 if len(worker.status.gpu_devices) < 2:
                     continue  # Need at least 2 GPUs for multi-GPU
 
-                allocatable = await get_worker_allocatable_resource(
-                    self._engine, worker, gpu_type
+                allocatable = get_worker_allocatable_resource(
+                    self._model_instances, worker, gpu_type
                 )
 
                 # Try to distribute VRAM across multiple GPUs
@@ -359,7 +359,7 @@ class CustomBackendResourceFitSelector(ScheduleCandidatesSelector):
             )
         return candidates
 
-    async def _find_cpu_only_candidates(
+    def _find_cpu_only_candidates(
         self, workers: List[Worker]
     ) -> List[ModelInstanceScheduleCandidate]:
         """
@@ -368,7 +368,7 @@ class CustomBackendResourceFitSelector(ScheduleCandidatesSelector):
         candidates = []
 
         for worker in workers:
-            allocatable = await get_worker_allocatable_resource(self._engine, worker)
+            allocatable = get_worker_allocatable_resource(self._model_instances, worker)
 
             # Check if worker has enough RAM for CPU inference
             if allocatable.ram >= self._ram_claim:

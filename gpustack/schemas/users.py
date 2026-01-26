@@ -2,6 +2,7 @@ from datetime import datetime
 import re
 from enum import Enum
 from sqlalchemy import Enum as SQLEnum, Text
+from sqlalchemy.orm import selectinload
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from typing import ClassVar, List, Optional, TYPE_CHECKING
@@ -144,18 +145,18 @@ class User(UserBase, BaseModelMixin, table=True):
     hashed_password: str
 
     cluster: Optional[Cluster] = Relationship(
-        back_populates="cluster_users", sa_relationship_kwargs={"lazy": "selectin"}
+        back_populates="cluster_users", sa_relationship_kwargs={"lazy": "noload"}
     )
-    worker: Optional[Worker] = Relationship(sa_relationship_kwargs={"lazy": "selectin"})
+    worker: Optional[Worker] = Relationship(sa_relationship_kwargs={"lazy": "noload"})
 
     api_keys: List["ApiKey"] = Relationship(
         back_populates='user',
-        sa_relationship_kwargs={"cascade": "delete", "lazy": "selectin"},
+        sa_relationship_kwargs={"cascade": "delete", "lazy": "noload"},
     )
     models: List["Model"] = Relationship(
         back_populates="users",
         link_model=ModelUserLink,
-        sa_relationship_kwargs={"lazy": "selectin"},
+        sa_relationship_kwargs={"lazy": "noload"},
     )
     user_groups: List["UserGroupMember"] = Relationship(  # type: ignore # noqa: F821
         back_populates="user",
@@ -198,5 +199,8 @@ def is_default_cluster_user(cluster_user: User) -> bool:
 
 async def get_default_cluster_user(session: AsyncSession) -> Optional[User]:
     return await User.one_by_field(
-        session=session, field="username", value=default_cluster_user_name
+        session=session,
+        field="username",
+        value=default_cluster_user_name,
+        options=[selectinload(User.cluster)],
     )

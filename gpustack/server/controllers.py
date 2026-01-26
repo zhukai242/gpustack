@@ -4,7 +4,6 @@ import string
 import asyncio
 from typing import Any, Dict, List, Tuple, Optional, Set
 from sqlmodel.ext.asyncio.session import AsyncSession
-from sqlmodel import select
 from sqlalchemy.orm import selectinload
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -56,7 +55,7 @@ from gpustack.schemas.users import (
 )
 from gpustack.server.bus import Event, EventType, event_bus
 from gpustack.server.catalog import get_catalog_draft_models
-from gpustack.server.db import get_engine
+from gpustack.server.db import async_session
 from gpustack.server.services import (
     ModelFileService,
     ModelInstanceService,
@@ -86,7 +85,6 @@ logger = logging.getLogger(__name__)
 
 class ModelController:
     def __init__(self, cfg: Config):
-        self._engine = get_engine()
         self._config = cfg
         self._disable_gateway = cfg.gateway_mode == GatewayModeEnum.disabled
         self._k8s_config = get_async_k8s_config(cfg=cfg)
@@ -102,7 +100,7 @@ class ModelController:
             self._higress_network_api = NetworkingHigressIoV1Api(base_client)
             self._networking_api = k8s_client.NetworkingV1Api(api_client=base_client)
 
-        async for event in Model.subscribe(self._engine, source="model_controller"):
+        async for event in Model.subscribe(source="model_controller"):
             if event.type == EventType.HEARTBEAT:
                 continue
 
@@ -115,7 +113,7 @@ class ModelController:
 
         model: Model = event.data
         try:
-            async with AsyncSession(self._engine) as session:
+            async with async_session() as session:
                 await set_default_worker_selector(session, model)
                 await sync_replicas(session, model, self._config)
                 await distribute_models_to_user(session, model, event)
@@ -134,7 +132,6 @@ class ModelController:
 
 class ModelInstanceController:
     def __init__(self, cfg: Config):
-        self._engine = get_engine()
         self._config = cfg
         self._k8s_config = get_async_k8s_config(cfg=cfg)
         self._disable_gateway = cfg.gateway_mode == GatewayModeEnum.disabled
@@ -149,9 +146,7 @@ class ModelInstanceController:
             base_client = k8s_client.ApiClient(configuration=self._k8s_config)
             self._higress_network_api = NetworkingHigressIoV1Api(base_client)
 
-        async for event in ModelInstance.subscribe(
-            self._engine, source="model_instance_controller"
-        ):
+        async for event in ModelInstance.subscribe(source="model_instance_controller"):
             if event.type == EventType.HEARTBEAT:
                 continue
 
@@ -164,7 +159,7 @@ class ModelInstanceController:
 
         model_instance: ModelInstance = event.data
         try:
-            async with AsyncSession(self._engine, expire_on_commit=False) as session:
+            async with async_session() as session:
                 model = await Model.one_by_id(session, model_instance.model_id)
                 if not model:
                     return
@@ -201,57 +196,6 @@ class ModelInstanceController:
             logger.error(
                 f"Failed to reconcile model instance {model_instance.name}: {e}"
             )
-
-
-def parse_tgi_info_meta(response_json: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Parse the meta information from the TGI-like /info response.
-
-    Example:
-    {
-        "docker_label": null,
-        "max_batch_total_tokens": 8192,
-        "max_best_of": 1,
-        "max_concurrent_requests": 200,
-        "max_stop_sequences": null,
-        "max_waiting_tokens": null,
-        "sha": null,
-        "validation_workers": null,
-        "version": "1.0.0",
-        "waiting_served_ratio": null,
-        "models": [
-            {
-                "model_device_type": "npu",
-                "model_dtype": "float16",
-                "model_id": "deepseek",
-                "model_pipeline_tag": "text-generation",
-                "model_sha": null,
-                "max_total_tokens": 2560
-            }
-        ],
-        "max_input_length": 2048
-    }
-    """
-    meta_info = {}
-
-    if "models" in response_json and response_json["models"]:
-        first_model = response_json["models"][0]
-        meta_info.update(first_model)
-
-    # Optional keys from TGI-like backends
-    optional_keys = [
-        "max_batch_total_tokens",
-        "max_best_of",
-        "max_concurrent_requests",
-        "max_stop_sequences",
-        "max_waiting_tokens",
-        "max_input_length",
-    ]
-    for key in optional_keys:
-        if key in response_json:
-            meta_info[key] = response_json[key]
-
-    return meta_info
 
 
 async def set_default_worker_selector(session: AsyncSession, model: Model):
@@ -392,7 +336,13 @@ async def ensure_instance_model_file(session: AsyncSession, instance: ModelInsta
         return
 
     if len(instance.model_files) > 0:
-        instance = await ModelInstance.one_by_id(session, instance.id)
+        instance = await ModelInstance.one_by_id(
+            session,
+            instance.id,
+            options=[
+                selectinload(ModelInstance.model_files),
+            ],
+        )
         await sync_instance_files_state(session, instance, instance.model_files)
         return
 
@@ -550,7 +500,9 @@ async def find_scale_down_candidates(
     instances: List[ModelInstance], model: Model
 ) -> List[ModelInstanceScore]:
     try:
-        placement_scorer = PlacementScorer(model, scale_type=ScaleTypeEnum.SCALE_DOWN)
+        placement_scorer = PlacementScorer(
+            model, instances, scale_type=ScaleTypeEnum.SCALE_DOWN
+        )
         placement_candidates = await placement_scorer.score_instances(instances)
 
         offload_layer_scorer = OffloadLayerScorer(model)
@@ -608,7 +560,10 @@ async def get_cluster_registry(
     session: AsyncSession, cluster_id: int
 ) -> Optional[McpBridgeRegistry]:
     cluster_user = await User.one_by_field(
-        session=session, field="cluster_id", value=cluster_id
+        session=session,
+        field="cluster_id",
+        value=cluster_id,
+        options=[selectinload(User.cluster)],
     )
     if is_default_cluster_user(cluster_user):
         return None
@@ -695,16 +650,14 @@ async def calculate_destinations(
 
 class WorkerController:
     def __init__(self, cfg: Config):
-        self._engine = get_engine()
         self._provisioning = WorkerProvisioningController(cfg)
-        pass
 
     async def start(self):
         """
         Start the controller.
         """
 
-        async for event in Worker.subscribe(self._engine, source="worker_controller"):
+        async for event in Worker.subscribe(source="worker_controller"):
             if event.type == EventType.HEARTBEAT:
                 continue
             try:
@@ -729,7 +682,7 @@ class WorkerController:
         ):
             return
 
-        async with AsyncSession(self._engine) as session:
+        async with async_session() as session:
             instances = await ModelInstance.all_by_field(
                 session, "worker_name", worker.name
             )
@@ -821,14 +774,13 @@ class WorkerController:
         )
         if not should_notify:
             return
-        async with AsyncSession(self._engine) as session:
+        async with async_session() as session:
             if worker.worker_pool_id is not None:
-                result = await session.exec(
-                    select(WorkerPool)
-                    .options(selectinload(WorkerPool.pool_workers))
-                    .where(WorkerPool.id == worker.worker_pool_id)
+                worker_pool = await WorkerPool.one_by_id(
+                    session,
+                    worker.worker_pool_id,
+                    options=[selectinload(WorkerPool.pool_workers)],
                 )
-                worker_pool = result.one_or_none()
                 if worker_pool is not None:
                     copied_pool = WorkerPool(**worker_pool.model_dump())
                     await event_bus.publish(
@@ -839,15 +791,14 @@ class WorkerController:
                         ),
                     )
             if worker.cluster_id is not None:
-                result = await session.exec(
-                    select(Cluster)
-                    .options(
+                cluster = await Cluster.one_by_id(
+                    session,
+                    worker.cluster_id,
+                    options=[
                         selectinload(Cluster.cluster_workers),
                         selectinload(Cluster.cluster_models),
-                    )
-                    .where(Cluster.id == worker.cluster_id)
+                    ],
                 )
-                cluster = result.one_or_none()
                 if cluster is not None:
                     copied_cluster = Cluster(**cluster.model_dump())
                     await event_bus.publish(
@@ -860,11 +811,12 @@ class WorkerController:
 
 
 class InferenceBackendController:
-    def __init__(self):
-        self._engine = get_engine()
+    """
+    Inference backend controller initializes built-in backends in the database.
+    """
 
     async def start(self):
-        async with AsyncSession(self._engine) as session:
+        async with async_session() as session:
             for built_in_backend in get_built_in_backend():
                 if built_in_backend.backend_name == BackendEnum.CUSTOM.value:
                     continue
@@ -883,17 +835,12 @@ class ModelFileController:
     Model file controller syncs the model file download status to related model instances.
     """
 
-    def __init__(self):
-        self._engine = get_engine()
-
     async def start(self):
         """
         Start the controller.
         """
 
-        async for event in ModelFile.subscribe(
-            self._engine, source="model_file_controller"
-        ):
+        async for event in ModelFile.subscribe(source="model_file_controller"):
             if event.type == EventType.CREATED or event.type == EventType.UPDATED:
                 await self._reconcile(event)
 
@@ -904,15 +851,22 @@ class ModelFileController:
 
         file: ModelFile = event.data
         try:
-            async with AsyncSession(self._engine) as session:
-                file = await ModelFile.one_by_id(session, file.id)
+            async with async_session() as session:
+                file = await ModelFile.one_by_id(
+                    session,
+                    file.id,
+                    options=[
+                        selectinload(ModelFile.instances),
+                        selectinload(ModelFile.draft_instances),
+                    ],
+                )
 
             if not file:
                 # In case the file is deleted
                 return
 
             for instance in file.instances + file.draft_instances:
-                async with AsyncSession(self._engine) as session:
+                async with async_session() as session:
                     await sync_instance_files_state(session, instance, [file])
         except Exception as e:
             logger.error(f"Failed to reconcile model file {file.id}: {e}")
@@ -1186,14 +1140,10 @@ async def new_workers_from_pool(
 
 
 class WorkerPoolController:
-    def __init__(self):
-        self._engine = get_engine()
-        pass
+    """Worker pool controller creates new workers based on the worker pool configuration."""
 
     async def start(self):
-        async for event in WorkerPool.subscribe(
-            self._engine, source="worker_pool_controller"
-        ):
+        async for event in WorkerPool.subscribe(source="worker_pool_controller"):
             if event.type == EventType.HEARTBEAT:
                 continue
             try:
@@ -1206,8 +1156,10 @@ class WorkerPoolController:
         Reconcile the worker pool state with the current event.
         """
         logger.info(f"Reconcile worker pool {event.data.id} with event {event.type}")
-        async with AsyncSession(self._engine) as session:
-            pool = await WorkerPool.one_by_id(session, event.data.id)
+        async with async_session() as session:
+            pool = await WorkerPool.one_by_id(
+                session, event.data.id, options=[selectinload(WorkerPool.cluster)]
+            )
             if pool is None or pool.deleted_at is not None:
                 return
             # mark the data to avoid read after commit
@@ -1235,7 +1187,6 @@ class WorkerPoolController:
 
 class WorkerProvisioningController:
     def __init__(self, cfg: Config):
-        self._engine = get_engine()
         self._cfg = cfg
 
     @classmethod
@@ -1473,9 +1424,16 @@ class WorkerProvisioningController:
         logger.info(
             f"Reconcile provisioning worker {event.data.name} with event {event.type}"
         )
-        async with AsyncSession(self._engine, expire_on_commit=False) as session:
+        async with async_session() as session:
             # Fetch the worker from the database
-            worker: Worker = await Worker.one_by_id(session, worker.id)
+            worker: Worker = await Worker.one_by_id(
+                session,
+                worker.id,
+                options=[
+                    selectinload(Worker.cluster),
+                    selectinload(Worker.worker_pool),
+                ],
+            )
             if not worker:
                 return
             credential: CloudCredential = await CloudCredential.one_by_id(
@@ -1512,7 +1470,6 @@ class WorkerProvisioningController:
 
 class ClusterController:
     def __init__(self, cfg: Config):
-        self._engine = get_engine()
         self._cfg = cfg
         self._disable_gateway = cfg.gateway_mode == GatewayModeEnum.disabled
         self._k8s_config = get_async_k8s_config(cfg=cfg)
@@ -1526,7 +1483,7 @@ class ClusterController:
             base_client = k8s_client.ApiClient(configuration=self._k8s_config)
             self._higress_network_api = NetworkingHigressIoV1Api(base_client)
 
-        async for event in Cluster.subscribe(self._engine, source="cluster_controller"):
+        async for event in Cluster.subscribe(source="cluster_controller"):
             if event.type == EventType.HEARTBEAT:
                 continue
             try:
@@ -1549,8 +1506,10 @@ class ClusterController:
         cluster: Cluster = event.data
         if not cluster:
             return
-        async with AsyncSession(self._engine) as session:
-            cluster: Cluster = await Cluster.one_by_id(session, cluster.id)
+        async with async_session() as session:
+            cluster: Cluster = await Cluster.one_by_id(
+                session, cluster.id, options=[selectinload(Cluster.cluster_workers)]
+            )
             if not cluster or cluster.provider in [
                 ClusterProvider.Kubernetes,
                 ClusterProvider.Docker,
@@ -1593,7 +1552,7 @@ class ClusterController:
         mcp_resource_name = mcp_handler.cluster_mcp_bridge_name(cluster.id)
         desired_registries = []
         to_delete_prefix = mcp_handler.cluster_worker_prefix(cluster.id)
-        async with AsyncSession(self._engine) as session:
+        async with async_session() as session:
             desired_registries = await self._get_worker_registries(session, cluster.id)
         try:
             await mcp_handler.ensure_mcp_bridge(

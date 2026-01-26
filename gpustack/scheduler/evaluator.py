@@ -12,6 +12,7 @@ from cachetools import TTLCache
 from aiolimiter import AsyncLimiter
 
 from gpustack.api.exceptions import HTTPException
+from gpustack.client.worker_filesystem_client import WorkerFilesystemClient
 from gpustack.config.config import Config
 from gpustack.policies.base import ModelInstanceScheduleCandidate
 from gpustack import envs
@@ -24,6 +25,7 @@ from gpustack.schemas.model_evaluations import (
     ResourceClaim,
 )
 from gpustack.schemas.models import (
+    ModelInstance,
     BackendEnum,
     CategoryEnum,
     SourceEnum,
@@ -31,6 +33,7 @@ from gpustack.schemas.models import (
     is_gguf_model,
 )
 from gpustack.schemas.workers import Worker, WorkerStateEnum
+from gpustack.server.worker_selector import WorkerSelector
 
 from gpustack.utils.gpu import (
     all_gpu_match,
@@ -88,8 +91,12 @@ async def evaluate_models(
         session, fields=fields, extra_conditions=extra_conditions
     )
 
+    model_instances = await ModelInstance.all_by_fields(session, fields=fields)
+
     async def evaluate(model: ModelSpec):
-        return await evaluate_model_with_cache(config, session, model, workers)
+        return await evaluate_model_with_cache(
+            config, session, model, workers, model_instances
+        )
 
     tasks = [evaluate(model) for model in model_specs]
     results = await asyncio.gather(*tasks)
@@ -138,6 +145,7 @@ async def evaluate_model_with_cache(
     session: AsyncSession,
     model: ModelSpec,
     workers: List[Worker],
+    model_instances: List[ModelInstance],
 ) -> ModelEvaluationResult:
     cache_key = make_hashable_key(model, workers)
     if cache_key in evaluate_cache:
@@ -148,7 +156,9 @@ async def evaluate_model_with_cache(
 
     try:
         async with evaluate_model_limiter:
-            result = await evaluate_model(config, session, model, workers)
+            result = await evaluate_model(
+                config, session, model, workers, model_instances
+            )
             evaluate_cache[cache_key] = result
     except Exception as e:
         logger.exception(
@@ -167,6 +177,7 @@ async def evaluate_model(
     session: AsyncSession,
     model: ModelSpec,
     workers: List[Worker],
+    model_instances: List[ModelInstance],
 ) -> ModelEvaluationResult:
     result = ModelEvaluationResult()
 
@@ -177,7 +188,7 @@ async def evaluate_model(
 
     evaluations = [
         (evaluate_model_input, (session, model)),
-        (evaluate_model_metadata, (config, model)),
+        (evaluate_model_metadata, (config, session, model, workers)),
         (evaluate_environment, (model, workers)),
     ]
     for evaluation, args in evaluations:
@@ -195,8 +206,11 @@ async def evaluate_model(
     result.resource_claim_by_cluster_id = {}
 
     for cluster_id, cluster_workers in workers_by_cluster.items():
+        cluster_model_instances = [
+            inst for inst in model_instances if inst.cluster_id == cluster_id
+        ]
         candidate, schedule_messages = await scheduler.find_candidate(
-            config, model, cluster_workers
+            config, model, cluster_workers, cluster_model_instances
         )
         if not candidate:
             result.scheduling_messages.extend(schedule_messages)
@@ -323,17 +337,44 @@ async def evaluate_environment(
 
 async def evaluate_model_metadata(
     config: Config,
+    session: AsyncSession,
     model: ModelSpec,
+    workers: List[Worker],
 ) -> Tuple[bool, List[str]]:
     try:
-        if model.source == SourceEnum.LOCAL_PATH and not os.path.exists(
-            model.local_path
-        ):
-            # The local path model is not accessible from the server.
-            return False, [
-                "The model file path you specified does not exist on the GPUStack server. "
-                "It's recommended to place the model file at the same path on both the GPUStack server and GPUStack workers. This helps GPUStack make better decisions."
-            ]
+        if model.source == SourceEnum.LOCAL_PATH:
+            # Check if local path exists on server
+            path_exists_on_server = os.path.exists(model.local_path)
+
+            if not path_exists_on_server:
+                # Try to check if path exists on any worker
+                try:
+                    async with WorkerFilesystemClient() as filesystem_client:
+                        selector = WorkerSelector(filesystem_client)
+
+                        found_worker = await selector.find_worker_with_path(
+                            workers, path=model.local_path
+                        )
+
+                        if found_worker:
+                            logger.info(
+                                f"Found path {model.local_path} on worker {found_worker.id}"
+                            )
+                        else:
+                            # Path not found on any worker
+                            return False, [
+                                "The model file path you specified does not exist on the GPUStack server or any worker. "
+                                "Please ensure the model file is accessible from at least one worker."
+                            ]
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to check path on workers: {e}, falling back to local check"
+                    )
+                    # Fallback to original warning
+                    return False, [
+                        "The model file path you specified does not exist on the GPUStack server. "
+                        "It's recommended to place the model file at the same path on both the GPUStack server and GPUStack workers. This helps GPUStack make better decisions."
+                    ]
 
         if model.source in [
             SourceEnum.HUGGING_FACE,
@@ -355,7 +396,9 @@ async def evaluate_model_metadata(
         elif model.backend == BackendEnum.VOX_BOX:
             await scheduler.evaluate_vox_box_model(config, model)
         else:
-            await scheduler.evaluate_pretrained_config(model)
+            await scheduler.evaluate_pretrained_config(
+                model, session=session, workers=workers
+            )
 
         set_default_worker_selector(model)
     except Exception as e:

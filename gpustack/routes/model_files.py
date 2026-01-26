@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from sqlmodel import String, cast, func, or_
 from pathlib import Path
+from sqlalchemy.orm import selectinload
 
 from gpustack.api.exceptions import (
     AlreadyExistsException,
@@ -10,7 +11,7 @@ from gpustack.api.exceptions import (
     InternalServerErrorException,
     NotFoundException,
 )
-from gpustack.server.deps import SessionDep, EngineDep
+from gpustack.server.deps import SessionDep
 from gpustack.schemas.model_files import (
     ModelFile,
     ModelFileCreate,
@@ -26,7 +27,6 @@ router = APIRouter()
 
 @router.get("", response_model=ModelFilesPublic)
 async def get_model_files(
-    engine: EngineDep,
     session: SessionDep,
     params: ModelFileListParams = Depends(),
     search: str = None,
@@ -45,7 +45,6 @@ async def get_model_files(
     if params.watch:
         return StreamingResponse(
             ModelFile.streaming(
-                engine,
                 fields=fields,
                 filter_func=get_filter_func(search),
             ),
@@ -205,7 +204,9 @@ async def update_model_file(
 async def delete_model_file(
     session: SessionDep, id: int, cleanup: Optional[bool] = None
 ):
-    model_file = await ModelFile.one_by_id(session, id)
+    model_file = await ModelFile.one_by_id(
+        session, id, options=[selectinload(ModelFile.instances)]
+    )
     if not model_file:
         raise NotFoundException(message=f"Model file {id} not found")
 

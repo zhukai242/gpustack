@@ -426,10 +426,10 @@ class Worker(WorkerBase, BaseModelMixin, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
 
     cluster: Cluster = Relationship(
-        back_populates="cluster_workers", sa_relationship_kwargs={"lazy": "selectin"}
+        back_populates="cluster_workers", sa_relationship_kwargs={"lazy": "noload"}
     )
     worker_pool: Optional[WorkerPool] = Relationship(
-        back_populates="pool_workers", sa_relationship_kwargs={"lazy": "selectin"}
+        back_populates="pool_workers", sa_relationship_kwargs={"lazy": "noload"}
     )
     rack: Optional["Rack"] = Relationship(
         back_populates="rack_workers", sa_relationship_kwargs={"lazy": "selectin"}

@@ -2,7 +2,6 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, fields
 import enum
 import logging
-from sqlalchemy.ext.asyncio import AsyncEngine
 from typing import Dict, List, Optional, Tuple
 from gpustack.config import Config
 from gpustack.policies.event_recorder.recorder import EventCollector, EventLevelEnum
@@ -11,20 +10,20 @@ from gpustack.schemas.models import (
     CategoryEnum,
     ComputedResourceClaim,
     Model,
+    ModelInstance,
     ModelInstanceSubordinateWorker,
 )
 from gpustack.schemas.workers import Worker
 from gpustack.utils.hub import (
     get_hf_text_config,
     get_max_model_len,
-    get_pretrained_config_with_fallback,
+    get_pretrained_config_with_fallback_sync,
 )
 from gpustack.utils.gpu import (
     abbreviate_worker_gpu_indexes,
     group_gpu_ids_by_worker,
     group_gpu_indexes_by_gpu_type_and_worker,
 )
-from gpustack.server.db import get_engine
 from gpustack.policies.base import Allocatable, ModelInstanceScheduleCandidate
 from gpustack.policies.utils import (
     ListMessageBuilder,
@@ -94,7 +93,7 @@ class ModelParameters:
         """
 
         try:
-            pretrained_config = get_pretrained_config_with_fallback(
+            pretrained_config = get_pretrained_config_with_fallback_sync(
                 model, trust_remote_code=True
             )
         except Exception as e:
@@ -169,8 +168,6 @@ class ScheduleCandidatesSelector(ABC):
     _config: Config
     # Model to be scheduled.
     _model: Model
-    # Database engine.
-    _engine: AsyncEngine
     # Model hyperparameters.
     _model_params: ModelParameters
     # Frequently used model parameter in selectors.
@@ -193,11 +190,12 @@ class ScheduleCandidatesSelector(ABC):
         self,
         config: Config,
         model: Model,
+        model_instances: List[ModelInstance],
         parse_model_params: bool = True,
     ):
         self._config = config
         self._model = model
-        self._engine = get_engine()
+        self._model_instances = model_instances
         self._model_params = ModelParameters()
         self._num_attention_heads = 0
         self._gpu_count = 0
@@ -268,7 +266,7 @@ class ScheduleCandidatesSelector(ABC):
 
             self._gpu_count = world_size
 
-    async def get_worker_allocatable_resource(
+    def get_worker_allocatable_resource(
         self, worker: Worker, gpu_type: Optional[str] = None
     ) -> Allocatable:
         """
@@ -286,8 +284,8 @@ class ScheduleCandidatesSelector(ABC):
         if allocatable is not None:
             return allocatable
 
-        allocatable = await get_worker_allocatable_resource(
-            self._engine, worker, gpu_type
+        allocatable = get_worker_allocatable_resource(
+            self._model_instances, worker, gpu_type
         )
         self._workers_allocatable_resource_by_gpu_type.setdefault(
             gpu_type, {}
@@ -326,7 +324,7 @@ class ScheduleCandidatesSelector(ABC):
         ] = vram_by_idxs
         return vram_by_idxs
 
-    async def _get_worker_resource_claim(
+    def _get_worker_resource_claim(
         self,
         worker: Worker,
         gpu_indexes: List[int],
@@ -388,7 +386,7 @@ class ScheduleCandidatesSelector(ABC):
             gpu_addresses.append(addr)
         return gpu_addresses
 
-    async def _generate_manual_selected_gpus_overcommit_message(  # noqa: C901
+    def _generate_manual_selected_gpus_overcommit_message(  # noqa: C901
         self,
         candidate: ModelInstanceScheduleCandidate,
         workers: List[Worker],
@@ -433,7 +431,7 @@ class ScheduleCandidatesSelector(ABC):
                 if w is None:
                     continue
 
-                wa = await self.get_worker_allocatable_resource(w, gpu_type)
+                wa = self.get_worker_allocatable_resource(w, gpu_type)
                 vram_total_by_index = self._get_worker_vram_totals(w, gpu_type)
                 if wa.vram is None:
                     continue
@@ -492,7 +490,7 @@ class ScheduleCandidatesSelector(ABC):
 
         for wn, gpu_type, indexes, claim in pairs:
             w = worker_set.get(wn)
-            wa = await self.get_worker_allocatable_resource(w, gpu_type)
+            wa = self.get_worker_allocatable_resource(w, gpu_type)
             used_vram_claim_total += (
                 sum(v for k, v in claim.vram.items() if claim.vram is not None) or 0
             )
@@ -580,7 +578,7 @@ class ScheduleCandidatesSelector(ABC):
 
         return (True, str(scheduling_msg), effective_vram)
 
-    async def _get_non_overcommit_and_best_overcommit_candidates(
+    def _get_non_overcommit_and_best_overcommit_candidates(
         self,
         candidates: List[ModelInstanceScheduleCandidate],
         workers: List[Worker],
@@ -612,7 +610,7 @@ class ScheduleCandidatesSelector(ABC):
                 gpu_memory_utilization.get("*", 0),
             )
             overcommit, msg, effective_vram = (
-                await self._generate_manual_selected_gpus_overcommit_message(
+                self._generate_manual_selected_gpus_overcommit_message(
                     c, workers, request, gpu_memory_utilization_for_type
                 )
             )
@@ -630,7 +628,7 @@ class ScheduleCandidatesSelector(ABC):
 
         return non_overcommits_candidates, best_overcommit_candidate, overcommit_msg
 
-    async def _find_manual_gpu_selection_candidates(  # noqa: C901
+    def _find_manual_gpu_selection_candidates(  # noqa: C901
         self,
         workers: List[Worker],
         gpu_memory_utilization: Dict[str, float],
@@ -676,12 +674,10 @@ class ScheduleCandidatesSelector(ABC):
         candidates = []
 
         # Filter and sort selected workers by resource
-        selected_workers_by_gpu_type = (
-            await sort_selected_workers_by_gpu_type_and_resource(
-                workers,
-                self._selected_gpu_indexes_by_gpu_type_and_worker,
-                self.get_worker_allocatable_resource,
-            )
+        selected_workers_by_gpu_type = sort_selected_workers_by_gpu_type_and_resource(
+            workers,
+            self._selected_gpu_indexes_by_gpu_type_and_worker,
+            self.get_worker_allocatable_resource,
         )
 
         # Handle single-worker single gpu scenarios
@@ -693,12 +689,14 @@ class ScheduleCandidatesSelector(ABC):
                 )
                 for worker in workers_of_type:
                     for gpu in worker.status.gpu_devices:
-                        worker_candidates = await self._manual_select_single_worker_multi_gpu_candidates(
-                            worker,
-                            [gpu.index],
-                            gpu_memory_utilization_for_type,
-                            request,
-                            gpu_type,
+                        worker_candidates = (
+                            self._manual_select_single_worker_multi_gpu_candidates(
+                                worker,
+                                [gpu.index],
+                                gpu_memory_utilization_for_type,
+                                request,
+                                gpu_type,
+                            )
                         )
                         candidates.extend(worker_candidates)
 
@@ -719,7 +717,7 @@ class ScheduleCandidatesSelector(ABC):
                         continue
 
                     worker_candidates = (
-                        await self._manual_select_single_worker_multi_gpu_candidates(
+                        self._manual_select_single_worker_multi_gpu_candidates(
                             worker,
                             selected_gpu_indexes,
                             gpu_memory_utilization_for_type,
@@ -737,7 +735,7 @@ class ScheduleCandidatesSelector(ABC):
                         gpu_memory_utilization.get("*", 0),
                     )
                     worker_candidates = (
-                        await self._manual_select_multi_worker_multi_gpu_candidates(
+                        self._manual_select_multi_worker_multi_gpu_candidates(
                             selected_workers,
                             gpu_memory_utilization_for_type,
                             request,
@@ -751,7 +749,7 @@ class ScheduleCandidatesSelector(ABC):
 
         # Separate non-overcommit and overcommit candidates
         non_overcommits_candidates, best_overcommit_candidate, overcommit_msg = (
-            await self._get_non_overcommit_and_best_overcommit_candidates(
+            self._get_non_overcommit_and_best_overcommit_candidates(
                 candidates, workers, request, gpu_memory_utilization
             )
         )
@@ -781,7 +779,7 @@ class ScheduleCandidatesSelector(ABC):
 
         return []
 
-    async def _manual_select_single_worker_multi_gpu_candidates(
+    def _manual_select_single_worker_multi_gpu_candidates(
         self,
         worker: Worker,
         gpu_indexes: List[int],
@@ -795,7 +793,7 @@ class ScheduleCandidatesSelector(ABC):
         if len(gpu_indexes) < self._gpu_count:
             return []
 
-        allocatable = await self.get_worker_allocatable_resource(worker, gpu_type)
+        allocatable = self.get_worker_allocatable_resource(worker, gpu_type)
         vram_totals_by_gpu_idx = self._get_worker_vram_totals(worker, gpu_type)
 
         # Check if the GPU is satisfied the requirement
@@ -828,7 +826,7 @@ class ScheduleCandidatesSelector(ABC):
         )
 
         # Get vram claims for used gpus
-        vram_claims = await self._get_worker_resource_claim(
+        vram_claims = self._get_worker_resource_claim(
             worker, used_gpu_indexes, gpu_memory_utilization, request, gpu_type
         )
         return [
@@ -847,7 +845,7 @@ class ScheduleCandidatesSelector(ABC):
             )
         ]
 
-    async def _manual_select_multi_worker_multi_gpu_candidates(
+    def _manual_select_multi_worker_multi_gpu_candidates(
         self,
         workers: List[Worker],
         gpu_memory_utilization: float,
@@ -864,7 +862,7 @@ class ScheduleCandidatesSelector(ABC):
         main_gpu_indexes = self._selected_gpu_indexes_by_gpu_type_and_worker.get(
             gpu_type, {}
         ).get(main_worker_name, [])
-        main_vram_claim = await self._get_worker_resource_claim(
+        main_vram_claim = self._get_worker_resource_claim(
             main_worker, main_gpu_indexes, gpu_memory_utilization, request, gpu_type
         )
 
@@ -882,14 +880,14 @@ class ScheduleCandidatesSelector(ABC):
                 continue
             if worker.name == main_worker_name:
                 continue
-            if not await self._validate_distributed_limit_per_worker(worker):
+            if not self._validate_distributed_limit_per_worker(worker):
                 continue
 
             # Sort GPUs by allocatable rate
             gpu_indexes = self._selected_gpu_indexes_by_gpu_type_and_worker.get(
                 gpu_type, {}
             ).get(worker.name, [])
-            vram_allocatable = await self._get_worker_resource_claim(
+            vram_allocatable = self._get_worker_resource_claim(
                 worker, gpu_indexes, gpu_memory_utilization, request, gpu_type
             )
             sorted_gpu_indexes = sort_gpu_indexes_by_allocatable_rate(
@@ -905,7 +903,7 @@ class ScheduleCandidatesSelector(ABC):
 
             # Assign GPUs to the subordinate worker
             sw_gpu_indexes = sorted_gpu_indexes[:assign_count]
-            vram_claim = await self._get_worker_resource_claim(
+            vram_claim = self._get_worker_resource_claim(
                 worker, sw_gpu_indexes, gpu_memory_utilization, request, gpu_type
             )
 
@@ -958,11 +956,11 @@ class ScheduleCandidatesSelector(ABC):
             )
         ]
 
-    async def _validate_distributed_limit_per_worker(self, worker: Worker) -> bool:
+    def _validate_distributed_limit_per_worker(self, worker: Worker) -> bool:
         """
         Validate that there is no more than one distributed vLLM instance per worker.
         """
-        instances = await get_worker_model_instances(self._engine, worker)
+        instances = get_worker_model_instances(self._model_instances, worker)
         for instance in instances:
             if (
                 instance.distributed_servers
