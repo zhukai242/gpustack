@@ -294,7 +294,7 @@ def inject_npu_globallog(
         Updated timestamp tracking structure for global logs
     """
 
-    for device in gpu_devices:
+    for device in status.gpu_devices:
         if device.vendor == "ascend":
             break
     else:
