@@ -1,8 +1,11 @@
 import asyncio
+import multiprocessing
 from multiprocessing import Process
 import os
 import re
 import aiohttp
+import http.server
+import socketserver
 
 import uvicorn
 import logging
@@ -62,6 +65,23 @@ from gpustack.envs import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def run_http_server(storage_dir, port):
+    """
+    Run HTTP server for file preview
+
+    Args:
+        storage_dir: The directory to serve files from
+        port: The port to listen on
+    """
+    os.chdir(storage_dir)
+    handler = http.server.SimpleHTTPRequestHandler
+    with socketserver.TCPServer(("0.0.0.0", port), handler) as httpd:
+        logger.info(
+            f"HTTP server for file preview started on port {port}, serving from {storage_dir}"
+        )
+        httpd.serve_forever()
 
 
 class Server:
@@ -153,12 +173,15 @@ class Server:
         server = uvicorn.Server(config)
         self._create_async_task(server.serve())
 
+        # Start HTTP server for file preview
+        self._start_http_server()
+
         await asyncio.gather(*self._async_tasks)
 
     def _start_default_registry_checker(self):
         registration.determine_default_registry(
             self._config.system_default_container_registry,
-        ),
+        )
 
     def _run_migrations(self):
         logger.info("Running database migration.")
@@ -331,6 +354,33 @@ class Server:
         exporter = MetricExporter(cfg=self._config)
         self._create_async_task(exporter.generate_metrics_cache())
         self._create_async_task(exporter.start())
+
+    def _start_http_server(self):
+        """
+        Start HTTP server for file preview
+        """
+        storage_dir = self._config.storage_dir
+        if not storage_dir:
+            logger.warning(
+                "Storage directory not configured, skipping HTTP server start"
+            )
+            return
+
+        port = self._config.httpserver_port
+        if not port:
+            logger.warning(
+                "HTTP server port not configured, skipping HTTP server start"
+            )
+            return
+
+        # 使用顶层函数作为进程目标，传递参数
+        http_server_process = multiprocessing.Process(
+            target=run_http_server, args=(storage_dir, port)
+        )
+        self._sub_processes.append(http_server_process)
+        # 立即启动HTTP服务器进程，因为它不依赖于API是否就绪
+        http_server_process.start()
+        logger.info(f"HTTP server process started with PID: {http_server_process.pid}")
 
     @staticmethod
     def _setup_data_dir(data_dir: str):

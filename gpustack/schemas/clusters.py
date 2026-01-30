@@ -102,7 +102,7 @@ class WorkerPool(WorkerPoolBase, BaseModelMixin, table=True):
         back_populates="cluster_worker_pools",
         sa_relationship_kwargs={"lazy": "noload"},
     )
-    pool_workers: list["Worker"] = Relationship(
+    pool_workers: List["Worker"] = Relationship(
         sa_relationship_kwargs={"lazy": "noload"},
         back_populates="worker_pool",
     )
@@ -286,7 +286,7 @@ class Cluster(ClusterBase, BaseModelMixin, table=True):
     cluster_model_instances: List["ModelInstance"] = Relationship(
         sa_relationship_kwargs={"lazy": "noload"}, back_populates="cluster"
     )
-    cluster_users: list["User"] = Relationship(
+    cluster_users: List["User"] = Relationship(
         sa_relationship_kwargs={"cascade": "delete", "lazy": "noload"},
         back_populates="cluster",
     )
@@ -396,7 +396,8 @@ class SensitiveRegistrationConfig(SensitivePredefinedConfig):
 class ClusterRegistrationTokenPublic(BaseModel):
     """
     The arguments of docker run command to register a worker.
-    The env attribute is basically a dict of environment variables parsed from SensitiveRegistrationConfig.
+    The env attribute is basically a dict of environment variables parsed from
+    SensitiveRegistrationConfig.
     """
 
     token: str

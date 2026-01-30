@@ -406,7 +406,9 @@ async def validate_distributed_vllm_limit_per_worker(
 
 
 @router.post("", response_model=ModelPublic)
-async def create_model(session: SessionDep, model_in: ModelCreate):
+async def create_model(
+    session: SessionDep, model_in: ModelCreate, current_user: CurrentUserDep
+):
     existing = await Model.one_by_field(session, "name", model_in.name)
     if existing:
         raise AlreadyExistsException(
@@ -418,6 +420,8 @@ async def create_model(session: SessionDep, model_in: ModelCreate):
 
     try:
         await revoke_model_access_cache(session=session)
+        # Set created_by to current user's ID
+        model_in.created_by = current_user.id
         model = await Model.create(session, model_in)
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to create model: {e}")

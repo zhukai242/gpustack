@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Optional, List, Dict, Any, Type
+from typing import ClassVar, Optional, List, Dict, Any, Type
 from enum import Enum
 from pydantic import BaseModel, Field
 from sqlmodel import (
@@ -185,7 +185,7 @@ class Tenant(TenantBase, BaseModelMixin, table=True):
 class TenantListParams(ListParams):
     """List tenants parameters."""
 
-    sortable_fields: list[str] = [
+    sortable_fields: ClassVar[List[str]] = [
         "name",
         "status",
         "created_at",
@@ -325,7 +325,7 @@ class TenantResource(TenantResourceBase, BaseModelMixin, table=True):
 class TenantResourceListParams(ListParams):
     """List tenant resources parameters."""
 
-    sortable_fields: list[str] = [
+    sortable_fields: ClassVar[List[str]] = [
         "tenant_id",
         "worker_id",
         "created_at",
@@ -400,7 +400,7 @@ class TenantResourceAdjustment(
 class TenantResourceAdjustmentListParams(ListParams):
     """List tenant resource adjustments parameters."""
 
-    sortable_fields: list[str] = [
+    sortable_fields: ClassVar[List[str]] = [
         "tenant_id",
         "adjustment_type",
         "adjustment_time",
@@ -484,7 +484,7 @@ class TenantResourceUsageDetail(
 class TenantResourceUsageDetailListParams(ListParams):
     """List tenant resource usage details parameters."""
 
-    sortable_fields: list[str] = [
+    sortable_fields: ClassVar[List[str]] = [
         "tenant_id",
         "usage_date",
         "worker_id",

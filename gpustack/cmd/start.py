@@ -170,6 +170,12 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
         default=get_gpustack_env("DATABASE_PORT"),
     )
     group.add_argument(
+        "--httpserver-port",
+        type=int,
+        help="Port for the HTTP server used for file preview.",
+        default=get_gpustack_env("HTTPSERVER_PORT"),
+    )
+    group.add_argument(
         "--metrics-port",
         type=int,
         help="Port to expose server metrics.",
@@ -640,6 +646,7 @@ def set_server_options(args, config_data: dict):
     options = [
         "metrics_port",
         "database_port",
+        "httpserver_port",
         "disable_metrics",
         "database_url",
         "disable_worker",

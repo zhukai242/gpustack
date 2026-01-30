@@ -130,6 +130,8 @@ class Config(WorkerConfig, BaseSettings):
     # The api_port is used in gpustack server/worker serving API requests.
     api_port: Optional[int] = 30080
     database_port: Optional[int] = 5432
+    # Port for the HTTP server used for file preview
+    httpserver_port: Optional[int] = 30081
     database_url: Optional[str] = None
     disable_worker: Optional[bool] = None  # Deprecated
     enable_worker: bool = False
@@ -187,6 +189,8 @@ class Config(WorkerConfig, BaseSettings):
         env_prefix="GPUSTACK_", protected_namespaces=('settings_',)
     )
 
+    storage_dir: Optional[str] = None
+
     def __init__(self, **values):
         super().__init__(**values)
         self._set_worker_fields = self.model_dump(
@@ -207,6 +211,9 @@ class Config(WorkerConfig, BaseSettings):
         )
         self.bin_dir = prepare_dir(self.bin_dir, os.path.join(self.data_dir, "bin"))
         self.log_dir = prepare_dir(self.log_dir, os.path.join(self.data_dir, "log"))
+        self.storage_dir = prepare_dir(
+            self.storage_dir, os.path.join(self.data_dir, "storage")
+        )
 
         if self.token is None:
             self.token = read_registration_token(self.data_dir)
@@ -303,6 +310,7 @@ class Config(WorkerConfig, BaseSettings):
         os.makedirs(self.cache_dir, exist_ok=True)
         os.makedirs(self.bin_dir, exist_ok=True)
         os.makedirs(self.log_dir, exist_ok=True)
+        os.makedirs(self.storage_dir, exist_ok=True)
         # prepare gateway dirs
         os.makedirs(
             os.getenv("GPUSTACK_GATEWAY_DIR", self.higress_base_dir()),

@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import List, Optional, Dict, Any
+from typing import ClassVar, List, Optional, Dict, Any
 from enum import Enum
 from sqlmodel import SQLModel, Field, Relationship, Column, Integer, ForeignKey, JSON
 import sqlalchemy as sa
@@ -99,7 +99,7 @@ class UserGroup(UserGroupBase, BaseModelMixin, table=True):
 class UserGroupListParams(ListParams):
     """List user groups parameters."""
 
-    sortable_fields: list[str] = [
+    sortable_fields: ClassVar[List[str]] = [
         "name",
         "status",
         "tenant_id",

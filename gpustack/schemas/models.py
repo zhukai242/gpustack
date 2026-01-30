@@ -238,6 +238,11 @@ class ModelSpecBase(SQLModel, ModelSource):
 class ModelBase(ModelSpecBase):
     cluster_id: Optional[int] = Field(default=None, foreign_key="clusters.id")
     access_policy: AccessPolicyEnum = Field(default=AccessPolicyEnum.AUTHED)
+    created_by: Optional[int] = Field(default=None, foreign_key="users.id")
+    task_type: int = Field(
+        default=0, description="Task type: 0 for inference, 1 for training"
+    )
+    dataset_id: Optional[int] = Field(default=None, foreign_key="datasets.id")
 
 
 class Model(ModelBase, BaseModelMixin, table=True):
@@ -252,6 +257,10 @@ class Model(ModelBase, BaseModelMixin, table=True):
         back_populates="models",
         link_model=ModelUserLink,
         sa_relationship_kwargs={"lazy": "noload"},
+    )
+    creator: Optional["User"] = Relationship(
+        sa_relationship_kwargs={"lazy": "noload", "foreign_keys": "Model.created_by"},
+        back_populates="created_models",
     )
 
     cluster: "Cluster" = Relationship(
@@ -286,6 +295,7 @@ class ModelPublic(
     id: int
     created_at: datetime
     updated_at: datetime
+    created_by: Optional[int] = None
 
 
 ModelsPublic = PaginatedList[ModelPublic]

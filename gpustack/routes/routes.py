@@ -36,6 +36,9 @@ from gpustack.routes import (
     clusters,
     token,
     user_groups,
+    tasks,
+    upload,
+    datasets,
 )
 
 from gpustack.api.exceptions import error_responses, openai_api_error_responses
@@ -73,6 +76,7 @@ v1_base_router.include_router(
     prefix="/my-models",
     tags=["My Models"],
 )
+v1_base_router.include_router(upload.router, prefix="/upload", tags=["File Upload"])
 
 cluster_client_router = APIRouter()
 cluster_client_router.add_api_route(
@@ -183,6 +187,8 @@ admin_routers = model_routers + [
         "prefix": "/reports",
         "tags": ["Reports"],
     },
+    {"router": tasks.router, "prefix": "/tasks", "tags": ["Tasks"]},
+    {"router": datasets.router, "prefix": "/datasets", "tags": ["Datasets"]},
 ]
 
 v1_admin_router = APIRouter()

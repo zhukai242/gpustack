@@ -34,6 +34,8 @@ def upgrade() -> None:
         licenses JSONB,
         release_date DATE,
         is_deployed BOOLEAN DEFAULT FALSE,
+        created_by INTEGER,
+        tenant_id INTEGER,
         id SERIAL PRIMARY KEY,
         created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP

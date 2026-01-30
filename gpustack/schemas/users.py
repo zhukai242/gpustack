@@ -158,6 +158,10 @@ class User(UserBase, BaseModelMixin, table=True):
         link_model=ModelUserLink,
         sa_relationship_kwargs={"lazy": "noload"},
     )
+    created_models: List["Model"] = Relationship(
+        back_populates="creator",
+        sa_relationship_kwargs={"lazy": "noload"},
+    )
     user_groups: List["UserGroupMember"] = Relationship(  # type: ignore # noqa: F821
         back_populates="user",
         sa_relationship_kwargs={"lazy": "selectin"},
