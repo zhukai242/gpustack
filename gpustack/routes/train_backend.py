@@ -25,7 +25,6 @@ from gpustack.schemas.inference_backend import (
     InferenceBackendsPublic,
     VersionConfig,
     VersionConfigDict,
-    get_built_in_backend,
     InferenceBackendPublic,
     VersionListItem,
     is_built_in_backend,
@@ -321,7 +320,9 @@ def merge_list_runners(
 
 @router.get("/list", response_model=InferenceBackendResponse)
 async def list_backend_configs(  # noqa: C901
-    session: SessionDep, cluster_id: Optional[int] = None
+    session: SessionDep,
+    cluster_id: Optional[int] = None,
+    current_user: CurrentUserDep = None,
 ):
     """
     Get list of available backend configurations with version information.
@@ -339,10 +340,35 @@ async def list_backend_configs(  # noqa: C901
 
     # Process all backends from database (includes both built-in and custom backends)
     try:
-        # 默认只查询推理类型的后端 (task_type=0)
-        inference_backends = await InferenceBackend.all_by_field(
-            session, "task_type", 0
-        )
+        # 根据用户角色过滤查询结果
+        if current_user and current_user.is_admin:
+            # 管理员可以查看所有训练后端
+            inference_backends = await InferenceBackend.all_by_field(
+                session, "task_type", 1
+            )
+        else:
+            # 普通用户只能查看自己创建的训练后端
+            # 假设 InferenceBackend 有 all_by_fields 方法来支持多字段过滤
+            # 如果没有该方法，可能需要使用 SQL 查询
+            try:
+                # 尝试使用多字段过滤
+                inference_backends = await InferenceBackend.all_by_fields(
+                    session,
+                    {
+                        "task_type": 1,
+                        "created_by": current_user.id if current_user else None,
+                    },
+                )
+            except AttributeError:
+                # 如果没有 all_by_fields 方法，使用 SQL 查询
+                from sqlalchemy import select
+
+                statement = select(InferenceBackend).where(
+                    InferenceBackend.task_type == 1,
+                    InferenceBackend.created_by
+                    == (current_user.id if current_user else None),
+                )
+                inference_backends = (await session.exec(statement)).all()
         for backend in inference_backends:
             # Get versions from version_config
             versions: List[VersionListItem] = []
@@ -399,14 +425,14 @@ async def list_backend_configs(  # noqa: C901
             items.append(backend_item)
 
         # Ensure Custom backend is always included even if not in database
-        custom_backend_item = InferenceBackendListItem(
-            backend_name=BackendEnum.CUSTOM,
-            default_version=None,
-            default_backend_param=None,
-            versions=[],
-            is_built_in=False,
-        )
-        items.append(custom_backend_item)
+        # custom_backend_item = InferenceBackendListItem(
+        #     backend_name=BackendEnum.CUSTOM,
+        #     default_version=None,
+        #     default_backend_param=None,
+        #     versions=[],
+        #     is_built_in=False,
+        # )
+        # items.append(custom_backend_item)
 
     except Exception as e:
         # Log error but don't fail the entire request
@@ -416,10 +442,31 @@ async def list_backend_configs(  # noqa: C901
 
 
 async def merge_runner_versions_to_db(
-    session: SessionDep, with_deprecated: bool = True
+    session: SessionDep, current_user: CurrentUserDep, with_deprecated: bool = True
 ) -> List[InferenceBackendPublic]:
     # Get database backends first
-    db_result = await InferenceBackend.all_by_field(session, "task_type", 0)
+    # 根据用户角色过滤查询结果
+    if current_user.is_admin:
+        # 管理员可以查看所有训练后端
+        db_result = await InferenceBackend.all_by_field(session, "task_type", 1)
+    else:
+        # 普通用户只能查看自己创建的训练后端
+        # 假设 InferenceBackend 有 all_by_fields 方法来支持多字段过滤
+        # 如果没有该方法，可能需要使用 SQL 查询
+        try:
+            # 尝试使用多字段过滤
+            db_result = await InferenceBackend.all_by_fields(
+                session, {"task_type": 1, "created_by": current_user.id}
+            )
+        except AttributeError:
+            # 如果没有 all_by_fields 方法，使用 SQL 查询
+            from sqlalchemy import select
+
+            statement = select(InferenceBackend).where(
+                InferenceBackend.task_type == 1,
+                InferenceBackend.created_by == current_user.id,
+            )
+            db_result = (await session.exec(statement)).all()
 
     # Create a map of database backends by name for easy lookup
     db_backends_map = {
@@ -427,44 +474,36 @@ async def merge_runner_versions_to_db(
         for backend in db_result
     }
 
-    # Ensure all BUILT_IN_BACKENDS are included
+    # 直接使用数据库中的训练后端，不依赖于 get_built_in_backend()
     merged_backends = []
-    built_in_backend_names = set()
 
-    for built_in_backend in get_built_in_backend():
-        if built_in_backend.backend_name == BackendEnum.CUSTOM.value:
+    # 处理所有数据库中的训练后端
+    for backend_name, db_backend in db_backends_map.items():
+        if backend_name == BackendEnum.CUSTOM.value:
             continue
-        built_in_backend_names.add(built_in_backend.backend_name)
 
-        # Get versions from list_service_runners using the common function
-        _, runner_versions, default_version = get_runner_versions_and_configs(
-            built_in_backend.backend_name,
-            backend_version=None,
-            with_deprecated=with_deprecated,
-        )
-
-        if default_version and not built_in_backend.default_version:
-            built_in_backend.default_version = default_version
-
-        db_backend = db_backends_map[built_in_backend.backend_name]
-        if not db_backend:
-            logger.warning(
-                f"No database backend found for {built_in_backend.backend_name}"
+        # 尝试获取 runner 版本信息
+        try:
+            # Get versions from list_service_runners using the common function
+            _, runner_versions, default_version = get_runner_versions_and_configs(
+                backend_name,
+                backend_version=None,
+                with_deprecated=with_deprecated,
             )
-            continue
-        # Merge versions from database backend.
-        for runner_version, version_config in runner_versions.root.items():
-            db_backend.built_in_version_configs[runner_version] = version_config
 
-        if default_version and not db_backend.default_version:
-            db_backend.default_version = default_version
+            # Merge versions from database backend.
+            for runner_version, version_config in runner_versions.root.items():
+                db_backend.built_in_version_configs[runner_version] = version_config
+
+            if default_version and not db_backend.default_version:
+                db_backend.default_version = default_version
+        except Exception as e:
+            # 如果获取 runner 版本信息失败，继续处理
+            logger.warning(
+                f"Failed to get runner versions for backend {backend_name}: {e}"
+            )
 
         merged_backends.append(db_backend)
-
-    # Add remaining database backends that are not in BUILT_IN_BACKENDS
-    for backend_name, db_backend in db_backends_map.items():
-        if backend_name not in built_in_backend_names:
-            merged_backends.append(db_backend)
 
     return merged_backends
 
@@ -510,6 +549,7 @@ def _generate_framework_index_map(
 async def get_inference_backends(  # noqa: C901
     session: SessionDep,
     params: ListParamsDep,
+    current_user: CurrentUserDep,
     search: str = None,
     include_deprecated: bool = False,
 ):
@@ -535,7 +575,7 @@ async def get_inference_backends(  # noqa: C901
         )
 
     merged_backends = await merge_runner_versions_to_db(
-        session, with_deprecated=include_deprecated
+        session, current_user, with_deprecated=include_deprecated
     )
     filter_backends = []
     workers = await Worker.all(session)
@@ -611,10 +651,8 @@ async def get_inference_backends(  # noqa: C901
 
 
 @router.get("/all", response_model=List[InferenceBackend])
-async def get_all_inference_backends(
-    session: SessionDep,
-):
-    backends = await merge_runner_versions_to_db(session)
+async def get_all_inference_backends(session: SessionDep, current_user: CurrentUserDep):
+    backends = await merge_runner_versions_to_db(session, current_user)
     ret = []
     for backend in backends:
         if not backend.is_built_in:

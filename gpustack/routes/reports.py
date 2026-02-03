@@ -17,6 +17,10 @@ from gpustack.schemas.reports import (
     ReportDetailsPublic,
     ReportDetailsListParams,
     ReportDetail,
+    ReportCreate,
+    ReportUpdate,
+    ReportStatusEnum,
+    ReportTypeEnum,
 )
 from gpustack.server.report_services import ReportService
 
@@ -28,34 +32,79 @@ async def generate_report(
     request: ReportGenerateRequest, session: SessionDep, current_user: CurrentUserDep
 ):
     """Generate a new resource usage report."""
-    from gpustack.schemas.reports import ReportCreate
-
     # Validate time range
     if request.end_time <= request.start_time:
         raise BadRequestException("End time must be after start time")
 
-    # Create report name
-    report_name = (
-        f"{request.type.value}_report_"
-        f"{request.start_time.strftime('%Y%m%d')}_"
-        f"{request.end_time.strftime('%Y%m%d')}"
-    )
-
     # Create report in database
     report_service = ReportService(session)
+    # Remove timezone information from datetime objects
+    if request.start_time.tzinfo:
+        start_time = request.start_time.replace(tzinfo=None)
+    else:
+        start_time = request.start_time
+    if request.end_time.tzinfo:
+        end_time = request.end_time.replace(tzinfo=None)
+    else:
+        end_time = request.end_time
+    # Create report name using the enum value
+    report_name = (
+        f"{request.type.value}_report_"
+        f"{start_time.strftime('%Y%m%d')}_"
+        f"{end_time.strftime('%Y%m%d')}"
+    )
+    # Pass the original enum type to ReportCreate
     report_create = ReportCreate(
         name=report_name,
         type=request.type,
-        start_time=request.start_time,
-        end_time=request.end_time,
+        start_time=start_time,
+        end_time=end_time,
         user_group_id=request.user_group_id,
         description=request.description,
     )
-    report = await report_service.create(report_create)
+    # Create report in database
+    try:
+        report = await report_service.create(report_create)
+    except Exception as e:
+        # If create fails, raise the exception immediately
+        raise e
 
-    # Generate report asynchronously (in background)
-    # For now, we'll generate it synchronously for simplicity
-    await report_service.generate_report(report.id)
+    # Generate report synchronously
+
+    # Get the report using the same session
+    report = await report_service.get_by_id(report.id)
+    if not report:
+        return report
+
+    # Update report status to generating
+    await report_service.update(
+        report.id, ReportUpdate(status=ReportStatusEnum.generating)
+    )
+
+    try:
+        # Generate report based on type
+        if report.type == ReportTypeEnum.gpu:
+            await report_service._generate_gpu_report(report)
+        elif report.type == ReportTypeEnum.worker:
+            await report_service._generate_worker_report(report)
+        else:
+            raise ValueError(f"Unknown report type: {report.type}")
+
+        # Update report status to completed
+        await report_service.update(
+            report.id, ReportUpdate(status=ReportStatusEnum.completed)
+        )
+    except Exception as e:
+        # Update report status to failed
+        await report_service.update(
+            report.id, ReportUpdate(status=ReportStatusEnum.failed)
+        )
+        # Log the error
+        import logging
+
+        logging.error(f"Failed to generate report {report.id}: {e}")
+        # Re-raise the exception to indicate failure
+        raise e
 
     return report
 

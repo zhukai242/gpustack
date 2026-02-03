@@ -641,7 +641,7 @@ async def get_model_catalog(
     """获取单个模型目录详情"""
     # 预加载specs和creator关系，避免延迟加载导致的MissingGreenlet错误
     # 只返回当前租户的模型
-    model_catalog = await session.exec(
+    result = await session.exec(
         select(ModelCatalog)
         .options(
             sa.orm.joinedload(ModelCatalog.specs),
@@ -651,7 +651,8 @@ async def get_model_catalog(
             ModelCatalog.id == model_catalog_id,
             ModelCatalog.tenant_id == current_user.tenant_id,
         )
-    ).first()
+    )
+    model_catalog = result.first()
 
     if not model_catalog or model_catalog.deleted_at:
         raise NotFoundException(f"模型目录 ID {model_catalog_id} 不存在")
@@ -801,7 +802,7 @@ async def get_model_catalog_spec(
 ):
     """获取单个模型目录规格详情"""
     # 只返回当前租户的模型规格
-    spec = await session.exec(
+    result = await session.exec(
         select(ModelCatalogSpec)
         .join(ModelCatalog)
         .where(
@@ -809,7 +810,8 @@ async def get_model_catalog_spec(
             ModelCatalogSpec.deleted_at.is_(None),
             ModelCatalog.tenant_id == current_user.tenant_id,
         )
-    ).first()
+    )
+    spec = result.first()
 
     if not spec:
         raise NotFoundException(f"模型目录规格 ID {spec_id} 不存在")

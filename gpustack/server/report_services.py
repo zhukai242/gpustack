@@ -23,13 +23,87 @@ class ReportService:
     def __init__(self, session: AsyncSession):
         self.session = session
 
+    def _convert_to_report_type(self, report_type_input) -> ReportTypeEnum:
+        """Convert input to ReportTypeEnum."""
+        if isinstance(report_type_input, ReportTypeEnum):
+            return report_type_input
+        elif isinstance(report_type_input, str):
+            lowercase_type = report_type_input.lower()
+            if lowercase_type == 'gpu':
+                return ReportTypeEnum.gpu
+            elif lowercase_type == 'worker':
+                return ReportTypeEnum.worker
+            else:
+                raise ValueError(f"Invalid report type: {report_type_input}")
+        else:
+            lowercase_type = str(report_type_input).lower()
+            if lowercase_type == 'gpu':
+                return ReportTypeEnum.gpu
+            elif lowercase_type == 'worker':
+                return ReportTypeEnum.worker
+            else:
+                raise ValueError(f"Invalid report type: {report_type_input}")
+
+    def _convert_to_report_status(self, report_status_input) -> ReportStatusEnum:
+        """Convert input to ReportStatusEnum."""
+        if isinstance(report_status_input, ReportStatusEnum):
+            return report_status_input
+        elif isinstance(report_status_input, str):
+            lowercase_status = report_status_input.lower()
+            if lowercase_status == 'pending':
+                return ReportStatusEnum.pending
+            elif lowercase_status == 'generating':
+                return ReportStatusEnum.generating
+            elif lowercase_status == 'completed':
+                return ReportStatusEnum.completed
+            elif lowercase_status == 'failed':
+                return ReportStatusEnum.failed
+            else:
+                raise ValueError(f"Invalid report status: {report_status_input}")
+        else:
+            lowercase_status = str(report_status_input).lower()
+            if lowercase_status == 'pending':
+                return ReportStatusEnum.pending
+            elif lowercase_status == 'generating':
+                return ReportStatusEnum.generating
+            elif lowercase_status == 'completed':
+                return ReportStatusEnum.completed
+            elif lowercase_status == 'failed':
+                return ReportStatusEnum.failed
+            else:
+                raise ValueError(f"Invalid report status: {report_status_input}")
+
     async def create(self, report_create: ReportCreate) -> Report:
         """Create a new report."""
-        report = Report.model_validate(report_create)
-        self.session.add(report)
-        await self.session.commit()
-        await self.session.refresh(report)
-        return report
+        # Convert report type and status to enums
+        report_type = self._convert_to_report_type(report_create.type)
+        report_status = self._convert_to_report_status(report_create.status)
+
+        # Create report data with enum values
+        report_data = {
+            "name": report_create.name,
+            "type": report_type,
+            "start_time": report_create.start_time,
+            "end_time": report_create.end_time,
+            "user_group_id": report_create.user_group_id,
+            "status": report_status,
+            "file_path": report_create.file_path,
+            "description": report_create.description,
+        }
+
+        # Create report object
+        report = Report(**report_data)
+
+        # Add to session and commit
+        try:
+            self.session.add(report)
+            await self.session.commit()
+            await self.session.refresh(report)
+            return report
+        except Exception as e:
+            # If any error occurs, rollback the session
+            await self.session.rollback()
+            raise e
 
     async def get_by_id(self, report_id: int) -> Optional[Report]:
         """
@@ -64,24 +138,24 @@ class ReportService:
             return None
 
         # Update report status to generating
-        await self.update(report_id, ReportUpdate(status=ReportStatusEnum.GENERATING))
+        await self.update(report_id, ReportUpdate(status=ReportStatusEnum.generating))
 
         try:
             # Generate report based on type
-            if report.type == ReportTypeEnum.GPU:
+            if report.type == ReportTypeEnum.gpu:
                 await self._generate_gpu_report(report)
-            elif report.type == ReportTypeEnum.WORKER:
+            elif report.type == ReportTypeEnum.worker:
                 await self._generate_worker_report(report)
             else:
                 raise ValueError(f"Unknown report type: {report.type}")
 
             # Update report status to completed
             await self.update(
-                report_id, ReportUpdate(status=ReportStatusEnum.COMPLETED)
+                report_id, ReportUpdate(status=ReportStatusEnum.completed)
             )
         except Exception as e:
             # Update report status to failed
-            await self.update(report_id, ReportUpdate(status=ReportStatusEnum.FAILED))
+            await self.update(report_id, ReportUpdate(status=ReportStatusEnum.failed))
             raise e
 
         return report
@@ -105,7 +179,7 @@ class ReportService:
         await self.update(report.id, ReportUpdate(file_path=file_path))
 
         # Save report details to database
-        await self._save_gpu_report_details(report, gpu_loads, resources)
+        # await self._save_gpu_report_details(report, gpu_loads, resources)
 
     async def _generate_worker_report(self, report: Report) -> None:
         """Generate worker resource report."""
@@ -127,7 +201,7 @@ class ReportService:
         await self.update(report.id, ReportUpdate(file_path=file_path))
 
         # Save report details to database
-        await self._save_worker_report_details(report, worker_loads, resources)
+        # await self._save_worker_report_details(report, worker_loads, resources)
 
     async def _get_resources_for_user_group(self, user_group_id: Optional[int]) -> List:
         """Get all resources for a user group."""
@@ -157,13 +231,17 @@ class ReportService:
         if not gpu_ids and not worker_ids:
             return []
 
+        # Convert datetime objects to Unix timestamps
+        start_timestamp = int(start_time.timestamp())
+        end_timestamp = int(end_time.timestamp())
+
         conditions = []
         if gpu_ids:
             conditions.append(GPULoad.gpu_id.in_(gpu_ids))
         if worker_ids:
             conditions.append(GPULoad.worker_id.in_(worker_ids))
-        conditions.append(GPULoad.timestamp >= start_time)
-        conditions.append(GPULoad.timestamp <= end_time)
+        conditions.append(GPULoad.timestamp >= start_timestamp)
+        conditions.append(GPULoad.timestamp <= end_timestamp)
 
         stmt = select(GPULoad).where(and_(*conditions)).order_by(GPULoad.timestamp)
         result = await self.session.exec(stmt)
@@ -176,13 +254,17 @@ class ReportService:
         if not worker_ids:
             return []
 
+        # Convert datetime objects to Unix timestamps
+        start_timestamp = int(start_time.timestamp())
+        end_timestamp = int(end_time.timestamp())
+
         stmt = (
             select(WorkerLoad)
             .where(
                 and_(
                     WorkerLoad.worker_id.in_(worker_ids),
-                    WorkerLoad.timestamp >= start_time,
-                    WorkerLoad.timestamp <= end_time,
+                    WorkerLoad.timestamp >= start_timestamp,
+                    WorkerLoad.timestamp <= end_timestamp,
                 )
             )
             .order_by(WorkerLoad.timestamp)
@@ -224,7 +306,7 @@ class ReportService:
             for load in gpu_loads:
                 writer.writerow(
                     {
-                        "timestamp": load.timestamp.isoformat(),
+                        "timestamp": datetime.fromtimestamp(load.timestamp).isoformat(),
                         "gpu_id": load.gpu_id,
                         "worker_id": load.worker_id,
                         "gpu_index": load.gpu_index,
@@ -280,7 +362,7 @@ class ReportService:
             for load in worker_loads:
                 writer.writerow(
                     {
-                        "timestamp": load.timestamp.isoformat(),
+                        "timestamp": datetime.fromtimestamp(load.timestamp).isoformat(),
                         "worker_id": load.worker_id,
                         "worker_name": (
                             worker_map.get(load.worker_id, {}).name
@@ -303,12 +385,15 @@ class ReportService:
         # Create report details
         report_details = []
         for load in gpu_loads:
+            # Convert Unix timestamp to datetime
+            load_timestamp = datetime.fromtimestamp(load.timestamp)
+
             # GPU utilization
             gpu_util_detail = ReportDetailBase(
                 metric_name="gpu_utilization",
                 metric_value=load.gpu_utilization if load.gpu_utilization else 0.0,
                 metric_unit="%",
-                timestamp=load.timestamp,
+                timestamp=load_timestamp,
                 resource_id=load.gpu_id,
                 resource_name=load.gpu_id,
                 user_group_id=report.user_group_id,
@@ -321,7 +406,7 @@ class ReportService:
                 metric_name="vram_utilization",
                 metric_value=load.vram_utilization if load.vram_utilization else 0.0,
                 metric_unit="%",
-                timestamp=load.timestamp,
+                timestamp=load_timestamp,
                 resource_id=load.gpu_id,
                 resource_name=load.gpu_id,
                 user_group_id=report.user_group_id,
@@ -347,12 +432,15 @@ class ReportService:
         # Create report details
         report_details = []
         for load in worker_loads:
+            # Convert Unix timestamp to datetime
+            load_timestamp = datetime.fromtimestamp(load.timestamp)
+
             # CPU utilization
             cpu_detail = ReportDetailBase(
                 metric_name="cpu_utilization",
                 metric_value=load.cpu if load.cpu else 0.0,
                 metric_unit="%",
-                timestamp=load.timestamp,
+                timestamp=load_timestamp,
                 resource_id=str(load.worker_id),
                 resource_name=(
                     worker_map.get(load.worker_id, {}).name
@@ -369,7 +457,7 @@ class ReportService:
                 metric_name="ram_utilization",
                 metric_value=load.ram if load.ram else 0.0,
                 metric_unit="%",
-                timestamp=load.timestamp,
+                timestamp=load_timestamp,
                 resource_id=str(load.worker_id),
                 resource_name=(
                     worker_map.get(load.worker_id, {}).name
@@ -386,7 +474,7 @@ class ReportService:
                 metric_name="gpu_utilization",
                 metric_value=load.gpu if load.gpu else 0.0,
                 metric_unit="%",
-                timestamp=load.timestamp,
+                timestamp=load_timestamp,
                 resource_id=str(load.worker_id),
                 resource_name=(
                     worker_map.get(load.worker_id, {}).name
@@ -403,7 +491,7 @@ class ReportService:
                 metric_name="vram_utilization",
                 metric_value=load.vram if load.vram else 0.0,
                 metric_unit="%",
-                timestamp=load.timestamp,
+                timestamp=load_timestamp,
                 resource_id=str(load.worker_id),
                 resource_name=(
                     worker_map.get(load.worker_id, {}).name
@@ -435,9 +523,16 @@ class ReportService:
 
     async def list(self, skip: int = 0, limit: int = 100, **filters) -> List[Report]:
         """List reports with optional filters."""
-        return await Report.all_by_fields(
-            self.session, fields=filters, skip=skip, limit=limit
-        )
+        statement = select(Report)
+        for key, value in filters.items():
+            if isinstance(value, list):
+                statement = statement.where(getattr(Report, key).in_(value))
+            else:
+                statement = statement.where(getattr(Report, key) == value)
+
+        statement = statement.offset(skip).limit(limit)
+        result = await self.session.exec(statement)
+        return result.all()
 
     async def count(self, **filters) -> int:
         """Count reports with optional filters."""

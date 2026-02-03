@@ -131,6 +131,66 @@ async def get_task_stats(
     )
 
 
+@router.get("/train/stats", response_model=TaskStatsResponse)
+async def get_train_task_stats(
+    session: SessionDep,
+    current_user: CurrentUserDep,
+):
+    """获取训练任务统计信息，包括总数、运行中、排队中等状态的个数"""
+    # 查询当前用户创建的所有训练模型ID
+    model_ids_result = await session.exec(
+        select(Model.id).where(
+            Model.created_by == current_user.id, Model.task_type == 1  # 只查询训练任务
+        )
+    )
+    model_ids = model_ids_result.all()
+
+    if not model_ids:
+        return TaskStatsResponse(total=0, running=0, pending=0, error=0, other=0)
+
+    # 查询任务总数
+    total_result = await session.exec(
+        select(func.count(ModelInstance.id)).where(
+            ModelInstance.model_id.in_(model_ids)
+        )
+    )
+    total = total_result.one() or 0
+
+    # 查询运行中的任务数
+    running_result = await session.exec(
+        select(func.count(ModelInstance.id)).where(
+            ModelInstance.model_id.in_(model_ids),
+            ModelInstance.state == ModelInstanceStateEnum.RUNNING,
+        )
+    )
+    running = running_result.one() or 0
+
+    # 查询排队中的任务数
+    pending_result = await session.exec(
+        select(func.count(ModelInstance.id)).where(
+            ModelInstance.model_id.in_(model_ids),
+            ModelInstance.state == ModelInstanceStateEnum.PENDING,
+        )
+    )
+    pending = pending_result.one() or 0
+
+    # 查询错误状态的任务数
+    error_result = await session.exec(
+        select(func.count(ModelInstance.id)).where(
+            ModelInstance.model_id.in_(model_ids),
+            ModelInstance.state == ModelInstanceStateEnum.ERROR,
+        )
+    )
+    error = error_result.one() or 0
+
+    # 计算其他状态的任务数
+    other = total - running - pending - error
+
+    return TaskStatsResponse(
+        total=total, running=running, pending=pending, error=error, other=other
+    )
+
+
 async def _get_model_ids(
     session: SessionDep, current_user: CurrentUserDep
 ) -> List[int]:
@@ -148,6 +208,27 @@ async def _get_model_ids(
         select(Model.id)
         .join(User, Model.created_by == User.id)
         .where(User.tenant_id == current_user.tenant_id)
+    )
+    return model_ids_result.all()
+
+
+async def _get_train_model_ids(
+    session: SessionDep, current_user: CurrentUserDep
+) -> List[int]:
+    """
+    查询当前用户创建的所有训练模型ID
+
+    Args:
+        session: 数据库会话
+        current_user: 当前用户
+
+    Returns:
+        训练模型ID列表
+    """
+    model_ids_result = await session.exec(
+        select(Model.id).where(
+            Model.created_by == current_user.id, Model.task_type == 1  # 只查询训练任务
+        )
     )
     return model_ids_result.all()
 
@@ -291,6 +372,50 @@ async def get_task_list(
     """获取任务列表，包括部署名称、所属组、类型、状态等信息"""
     # 查询当前租户下的所有模型ID
     model_ids = await _get_model_ids(session, current_user)
+
+    if not model_ids:
+        return TaskListResponse(items=[], total=0)
+
+    # 查询所有模型实例
+    statement = (
+        select(ModelInstance)
+        .where(ModelInstance.model_id.in_(model_ids))
+        .offset((page - 1) * per_page)
+        .limit(per_page)
+    )
+    instances_result = await session.exec(statement)
+    instances = instances_result.all()
+
+    # 查询总数
+    total_result = await session.exec(
+        select(func.count(ModelInstance.id)).where(
+            ModelInstance.model_id.in_(model_ids)
+        )
+    )
+    total = total_result.one() or 0
+
+    # 获取排队中的任务，用于计算队列位置
+    pending_instance_ids = await _get_pending_instance_ids(session, model_ids)
+
+    # 构建响应
+    items = []
+    for instance in instances:
+        task_info = await _build_task_info(session, instance, pending_instance_ids)
+        items.append(task_info)
+
+    return TaskListResponse(items=items, total=total)
+
+
+@router.get("/train/list", response_model=TaskListResponse)
+async def get_train_task_list(
+    session: SessionDep,
+    current_user: CurrentUserDep,
+    page: int = Query(1, ge=1, description="页码"),
+    per_page: int = Query(10, ge=1, le=100, description="每页数量"),
+):
+    """获取训练任务列表，包括部署名称、所属组、类型、状态等信息"""
+    # 查询当前用户创建的所有训练模型ID
+    model_ids = await _get_train_model_ids(session, current_user)
 
     if not model_ids:
         return TaskListResponse(items=[], total=0)

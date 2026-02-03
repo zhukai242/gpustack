@@ -76,6 +76,11 @@ class InferenceBackendBase(SQLModel):
         default=None, sa_column=Column(Text, nullable=True)
     )
     health_check_path: Optional[str] = SQLField(default=None)
+    task_type: int = SQLField(
+        default=0, description="Task type: 0 for inference, 1 for training"
+    )
+    tenant_id: Optional[int] = SQLField(default=None, index=True)
+    created_by: Optional[int] = SQLField(default=None)
 
     def resolve_target_version(self, version: Optional[str] = None) -> Optional[str]:
         """

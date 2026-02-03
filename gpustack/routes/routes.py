@@ -25,6 +25,7 @@ from gpustack.routes import (
     system_settings,
     tenant_resources,
     tenants,
+    train_backend,
     update,
     users,
     users_v2,
@@ -130,6 +131,10 @@ worker_client_router.add_api_route(
 )
 worker_client_router.include_router(
     inference_backend.router, prefix="/inference-backends", tags=["Inference Backend"]
+)
+
+worker_client_router.include_router(
+    train_backend.router, prefix="/train-backends", tags=["Train Backend"]
 )
 
 admin_routers = model_routers + [

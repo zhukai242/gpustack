@@ -8,17 +8,17 @@ from gpustack.mixins import BaseModelMixin
 class ReportTypeEnum(str, Enum):
     """Report type enum."""
 
-    GPU = "gpu"
-    WORKER = "worker"
+    gpu = "gpu"
+    worker = "worker"
 
 
 class ReportStatusEnum(str, Enum):
     """Report status enum."""
 
-    PENDING = "pending"
-    GENERATING = "generating"
-    COMPLETED = "completed"
-    FAILED = "failed"
+    pending = "pending"
+    generating = "generating"
+    completed = "completed"
+    failed = "failed"
 
 
 class ReportBase(SQLModel):
@@ -29,7 +29,7 @@ class ReportBase(SQLModel):
     start_time: datetime
     end_time: datetime
     user_group_id: Optional[int] = None
-    status: ReportStatusEnum = Field(default=ReportStatusEnum.PENDING)
+    status: ReportStatusEnum = Field(default=ReportStatusEnum.pending)
     file_path: Optional[str] = None
     description: Optional[str] = None
 

@@ -165,6 +165,7 @@ class AvailableWorkerInfo(BaseModel):
     total_gpus: int = 0
     available_gpus: int = 0
     allocated_gpus: int = 0
+    activated_gpus: int = 0
     gpu_devices: List[AvailableGPUInfo] = Field(default_factory=list)
 
 
@@ -176,6 +177,7 @@ class AvailableResourcesResponse(BaseModel):
     total_gpus: int = 0
     available_gpus: int = 0
     allocated_gpus: int = 0
+    activated_gpus: int = 0
 
 
 class GPUModelCount(BaseModel):
@@ -327,27 +329,36 @@ async def _process_worker(
     worker_total_gpus = 0
     worker_available_gpus = 0
     worker_allocated_gpus = 0
+    worker_activated_gpu = 0
 
     # Extract GPU devices from worker status
+    gpu_devices = []
     if (
         worker.status
         and hasattr(worker.status, "gpu_devices")
         and worker.status.gpu_devices
     ):
-        for gpu in worker.status.gpu_devices:
-            gpu_info, is_allocated, skipped = await _process_gpu_device(
-                gpu, worker, allocated_gpu_map, activated_gpu_ids, include_allocated
-            )
+        gpu_devices = worker.status.gpu_devices
 
-            if gpu_info:
-                gpu_devices_list.append(gpu_info)
+    for gpu in gpu_devices:
+        gpu_info, is_allocated, skipped = await _process_gpu_device(
+            gpu, worker, allocated_gpu_map, activated_gpu_ids, include_allocated
+        )
 
-            if is_allocated:
-                worker_allocated_gpus += 1
-            else:
-                worker_available_gpus += 1
+        # Increment activated GPU count if the GPU is activated
+        # (Note: _process_gpu_device returns None only if the GPU is not activated)
+        if gpu_info or skipped:
+            worker_activated_gpu += 1
 
-        worker_total_gpus = len(worker.status.gpu_devices)
+        if gpu_info:
+            gpu_devices_list.append(gpu_info)
+
+        if is_allocated:
+            worker_allocated_gpus += 1
+        else:
+            worker_available_gpus += 1
+
+    worker_total_gpus = len(gpu_devices)
 
     # Get cluster and rack names
     cluster_name = None
@@ -370,10 +381,17 @@ async def _process_worker(
         total_gpus=worker_total_gpus,
         available_gpus=worker_available_gpus,
         allocated_gpus=worker_allocated_gpus,
+        activated_gpus=worker_activated_gpu,
         gpu_devices=gpu_devices_list,
     )
 
-    return worker_info, worker_total_gpus, worker_available_gpus, worker_allocated_gpus
+    return (
+        worker_info,
+        worker_total_gpus,
+        worker_available_gpus,
+        worker_allocated_gpus,
+        worker_activated_gpu,
+    )
 
 
 @router.get("/available-resources", response_model=AvailableResourcesResponse)
@@ -419,18 +437,24 @@ async def get_available_resources(
     total_gpus_count = 0
     available_gpus_count = 0
     allocated_gpus_count = 0
+    activated_gpus_count = 0
 
     for worker in workers:
-        worker_info, worker_total, worker_available, worker_allocated = (
-            await _process_worker(
-                worker, allocated_gpu_map, activated_gpu_ids, include_allocated
-            )
+        (
+            worker_info,
+            worker_total,
+            worker_available,
+            worker_allocated,
+            worker_activated,
+        ) = await _process_worker(
+            worker, allocated_gpu_map, activated_gpu_ids, include_allocated
         )
 
         result_workers.append(worker_info)
         total_gpus_count += worker_total
         available_gpus_count += worker_available
         allocated_gpus_count += worker_allocated
+        activated_gpus_count += worker_activated
 
     return AvailableResourcesResponse(
         workers=result_workers,
@@ -438,6 +462,7 @@ async def get_available_resources(
         total_gpus=total_gpus_count,
         available_gpus=available_gpus_count,
         allocated_gpus=allocated_gpus_count,
+        activated_gpus=activated_gpus_count,
     )
 
 
