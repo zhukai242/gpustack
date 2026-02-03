@@ -18,7 +18,6 @@ from gpustack.mixins import BaseModelMixin
 from gpustack.schemas.links import (
     ModelInstanceDraftModelFileLink,
     ModelInstanceModelFileLink,
-    ModelUserLink,
 )
 from gpustack.utils.command import find_parameter, find_bool_parameter
 from gpustack.schemas.model_routes import (
@@ -259,11 +258,11 @@ class Model(ModelBase, BaseModelMixin, table=True):
         sa_relationship_kwargs={"cascade": "delete", "lazy": "noload"},
         back_populates="model",
     )
-    users: List["User"] = Relationship(
-        back_populates="models",
-        link_model=ModelUserLink,
-        sa_relationship_kwargs={"lazy": "noload"},
-    )
+    # users: List["User"] = Relationship(
+    #     back_populates="models",
+    #     link_model=ModelUserLink,
+    #     sa_relationship_kwargs={"lazy": "noload"},
+    # )
     creator: Optional["User"] = Relationship(
         sa_relationship_kwargs={"lazy": "noload", "foreign_keys": "Model.created_by"},
         back_populates="created_models",
