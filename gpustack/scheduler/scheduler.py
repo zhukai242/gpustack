@@ -45,10 +45,11 @@ from gpustack.schemas.models import (
     Model,
     ModelInstance,
     ModelInstanceStateEnum,
-    SourceEnum,
     get_backend,
     is_gguf_model,
     DistributedServerCoordinateModeEnum,
+    SourceEnum,
+    is_omni_model,
 )
 from gpustack.server.bus import EventType
 from gpustack.server.db import async_session
@@ -59,11 +60,9 @@ from gpustack.scheduler.calculator import (
 from gpustack.server.services import ModelInstanceService, ModelService
 from gpustack.utils.command import find_parameter
 from gpustack.utils.gpu import group_gpu_ids_by_worker
-from gpustack.utils.hub import (
-    get_pretrained_config_with_fallback,
-    has_diffusers_model_index,
-)
+from gpustack.utils.hub import has_diffusers_model_index
 from gpustack.utils.math import largest_power_of_2_leq
+from gpustack.scheduler.calculator import get_pretrained_config
 from sqlalchemy.orm.attributes import flag_modified
 
 logger = logging.getLogger(__name__)
@@ -155,18 +154,14 @@ class Scheduler:
                     instance.state_message = "Evaluating resource requirements"
                     await ModelInstanceService(session).update(instance)
 
-                if model.source == SourceEnum.LOCAL_PATH and not os.path.exists(
-                    model.local_path
-                ):
-                    # The local path model is not accessible from the server, skip evaluation.
-                    await self._queue.put(instance)
-                    return
+                # Get available workers for potential remote parsing
+                workers = await Worker.all(session)
 
                 should_update_model = False
                 try:
                     if is_gguf_model(model):
                         should_update_model = await evaluate_gguf_model(
-                            self._config, model
+                            self._config, model, workers, session
                         )
                         if await self.check_model_distributability(
                             session, model, instance
@@ -180,6 +175,7 @@ class Scheduler:
                         should_update_model = await evaluate_pretrained_config(
                             model,
                             session=session,
+                            workers=workers,
                             raise_raw=True,
                         )
                 except Exception as e:
@@ -415,7 +411,8 @@ async def find_candidate(
             candidates_selector = AscendMindIEResourceFitSelector(
                 config, model, model_instances
             )
-        elif model.backend == BackendEnum.VLLM:
+        elif model.backend == BackendEnum.VLLM and not is_omni_model(model):
+            # Note: Route omni categories to CustomSelector for vLLM-Omni.
             candidates_selector = VLLMResourceFitSelector(
                 config, model, model_instances
             )
@@ -476,12 +473,15 @@ def pick_highest_score_candidate(candidates: List[ModelInstanceScheduleCandidate
 async def evaluate_gguf_model(
     config: Config,
     model: Model,
+    workers: Optional[List[Worker]] = None,
+    session: Optional[AsyncSession] = None,
 ) -> bool:
 
     task_output = await calculate_model_resource_claim(
         model,
         offload=GPUOffloadEnum.Full,
-        cache_dir=config.cache_dir,
+        workers=workers,
+        session=session,
     )
     if (
         task_output.resource_architecture
@@ -573,19 +573,56 @@ async def evaluate_vox_box_model(
     return should_update
 
 
-async def evaluate_diffusion_model(model: Model):
-    # SGLang now supports Diffusers (image) models.
+async def evaluate_diffusion_model(
+    model: Model,
+    workers: Optional[List[Worker]] = None,
+    session: Optional[AsyncSession] = None,
+):
+    """
+    Evaluate diffusion model and update model categories.
+
+    Args:
+        model: Model to evaluate
+        workers: Optional list of workers (for LOCAL_PATH remote read)
+        session: Optional database session (for LOCAL_PATH worker optimization)
+
+    Returns:
+        True if the model is a diffusion model, False otherwise
+    """
+    # vLLM/SGLang support Diffusers (image) models.
     # If the source (HF/ModelScope/Local Path) contains model_index.json with "_diffusers_version",
     # classify as IMAGE directly.
-    if model.backend != BackendEnum.SGLANG or (
-        model.categories and CategoryEnum.IMAGE not in model.categories
-    ):
+    if model.categories and CategoryEnum.IMAGE not in model.categories:
         return False
 
     hf_token = get_global_config().huggingface_token
-    is_diffusers = await asyncio.wait_for(
-        has_diffusers_model_index(model, token=hf_token), timeout=10
-    )
+
+    # For Hub sources and local files, use hub.py function
+    if model.source in (SourceEnum.HUGGING_FACE, SourceEnum.MODEL_SCOPE):
+        is_diffusers = await asyncio.wait_for(
+            has_diffusers_model_index(model, token=hf_token), timeout=10
+        )
+    # For LOCAL_PATH, try local first, then workers
+    elif model.source == SourceEnum.LOCAL_PATH:
+        # Try local read first
+        is_diffusers = await asyncio.wait_for(
+            has_diffusers_model_index(model, token=hf_token), timeout=10
+        )
+        # If not found locally and workers are provided, query workers
+        if not is_diffusers and workers:
+            from gpustack.scheduler.calculator import (
+                check_diffusers_model_index_from_workers,
+            )
+
+            is_diffusers = await asyncio.wait_for(
+                check_diffusers_model_index_from_workers(
+                    model, workers, session, hf_token
+                ),
+                timeout=10,
+            )
+    else:
+        return False
+
     if is_diffusers:
         model.categories = [CategoryEnum.IMAGE]
         return True
@@ -602,13 +639,17 @@ async def evaluate_pretrained_config(
     evaluate the model's pretrained config to determine its type.
     Args:
         model: Model to evaluate.
+        session: Optional database session (for LOCAL_PATH worker optimization).
+        workers: Optional list of workers (for LOCAL_PATH).
         raise_raw: If True, raise the raw exception.
     Returns:
         True if the model's categories are updated, False otherwise.
     """
     # 1) try to evaluate as diffusion model
     try:
-        is_image_category = await evaluate_diffusion_model(model)
+        is_image_category = await evaluate_diffusion_model(
+            model, workers=workers, session=session
+        )
         if is_image_category:
             return True
     except Exception:
@@ -617,10 +658,12 @@ async def evaluate_pretrained_config(
     architectures = get_vllm_override_architectures(model)
     if not architectures:
         try:
-            pretrained_config = await get_pretrained_config_with_fallback(
+            trust_remote_code = _extract_trust_remote_code(model)
+            pretrained_config = await get_pretrained_config(
                 model,
                 session=session,
                 workers=workers,
+                trust_remote_code=trust_remote_code,
             )
         except ValueError as e:
             # Skip value error exceptions and defaults to LLM catagory for certain cases.
@@ -665,6 +708,13 @@ async def evaluate_pretrained_config(
     categories_modified = set_model_categories(model, model_type)
     gpus_per_replica_modified = set_model_gpus_per_replica(model)
     return categories_modified or gpus_per_replica_modified
+
+
+def _extract_trust_remote_code(model: Model) -> bool:
+    """Extract trust_remote_code from model backend parameters."""
+    if model.backend_parameters and "--trust-remote-code" in model.backend_parameters:
+        return True
+    return False
 
 
 def get_vllm_override_architectures(model: Model) -> List[str]:

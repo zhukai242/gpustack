@@ -13,7 +13,6 @@ from gpustack.schemas.common import (
     PaginatedList,
     UTCDateTime,
     pydantic_column_type,
-    ItemList,
 )
 from gpustack.mixins import BaseModelMixin
 from gpustack.schemas.links import (
@@ -21,7 +20,12 @@ from gpustack.schemas.links import (
     ModelInstanceModelFileLink,
     ModelUserLink,
 )
-from gpustack.utils.command import find_parameter
+from gpustack.utils.command import find_parameter, find_bool_parameter
+from gpustack.schemas.model_routes import (
+    ModelRoute,
+    ModelRouteTarget,
+    AccessPolicyEnum,
+)
 
 if TYPE_CHECKING:
     from gpustack.schemas.model_files import ModelFile
@@ -60,10 +64,10 @@ class BackendEnum(str, Enum):
     CUSTOM = "Custom"
 
 
-class AccessPolicyEnum(str, Enum):
-    PUBLIC = "public"
-    AUTHED = "authed"
-    ALLOWED_USERS = "allowed_users"
+class BackendSourceEnum(str, Enum):
+    CUSTOM = "custom"
+    BUILT_IN = "built_in"
+    COMMUNITY = "community"
 
 
 class SpeculativeAlgorithmEnum(str, Enum):
@@ -219,7 +223,8 @@ class ModelSpecBase(SQLModel, ModelSource):
         sa_type=pydantic_column_type(SpeculativeConfig), default=None
     )
 
-    # Enable generic proxy for model
+    # Enable generic proxy for model, the control of generic proxy
+    # is migrated to ModelAccess. Keeping this field for backward compatibility
     generic_proxy: Optional[bool] = Field(default=False)
 
     @model_validator(mode="after")
@@ -237,6 +242,7 @@ class ModelSpecBase(SQLModel, ModelSource):
 
 class ModelBase(ModelSpecBase):
     cluster_id: Optional[int] = Field(default=None, foreign_key="clusters.id")
+    # Deprecated field, kept for backward compatibility
     access_policy: AccessPolicyEnum = Field(default=AccessPolicyEnum.AUTHED)
     created_by: Optional[int] = Field(default=None, foreign_key="users.id")
     task_type: int = Field(
@@ -268,6 +274,24 @@ class Model(ModelBase, BaseModelMixin, table=True):
         sa_relationship_kwargs={"lazy": "noload"},
     )
 
+    model_route_targets: List["ModelRouteTarget"] = Relationship(
+        back_populates="model",
+        sa_relationship_kwargs={
+            "lazy": "noload",
+            "overlaps": "models",
+            "cascade": "delete",
+        },
+    )
+
+    model_routes: List["ModelRoute"] = Relationship(
+        back_populates="models",
+        link_model=ModelRouteTarget,
+        sa_relationship_kwargs={
+            "lazy": "noload",
+            "overlaps": "model,model_route_targets,route_targets,model_route",
+        },
+    )
+
 
 class ModelListParams(ListParams):
     sortable_fields: ClassVar[List[str]] = [
@@ -282,7 +306,7 @@ class ModelListParams(ListParams):
 
 
 class ModelCreate(ModelBase):
-    pass
+    enable_model_route: Optional[bool] = Field(default=None)
 
 
 class ModelUpdate(ModelBase):
@@ -616,6 +640,35 @@ def is_audio_model(model: Model):
     return False
 
 
+def is_llm_model(model: Model):
+    """
+    Check if the model is an LLM model.
+    Args:
+        model: Model to check.
+    """
+    return not model.categories or CategoryEnum.LLM in model.categories
+
+
+def is_omni_model(model: Model) -> bool:
+    """
+    Check if the model is an omni model (Image or Audio category).
+    Args:
+        model: Model to check.
+    """
+
+    if model.backend == BackendEnum.VLLM and find_bool_parameter(
+        model.backend_parameters, ["omni"]
+    ):
+        return True
+
+    OMNI_CATEGORIES = (
+        CategoryEnum.IMAGE,
+        CategoryEnum.TEXT_TO_SPEECH,
+        CategoryEnum.SPEECH_TO_TEXT,
+    )
+    return any(cat in model.categories for cat in OMNI_CATEGORIES)
+
+
 def is_image_model(model: Model):
     """
     Check if the model is an image model.
@@ -670,35 +723,3 @@ def get_mmproj_filename(model: Union[Model, ModelSource]) -> Optional[str]:
             return mmproj
 
     return "*mmproj*.gguf"
-
-
-class ModelUserAccess(BaseModel):
-    id: int
-    # More custom fields can be added here, e.g., quota, rate_limit, etc.
-
-
-class ModelAccessUpdate(BaseModel):
-    access_policy: Optional[AccessPolicyEnum] = None
-    users: List[ModelUserAccess]
-
-
-class ModelUserAccessExtended(ModelUserAccess):
-    username: Optional[str] = None
-    full_name: Optional[str] = None
-    avatar_url: Optional[str] = None
-    # More user fields can be added here. e.g. quota, rate_limit, etc.
-
-
-ModelAccessList = ItemList[ModelUserAccessExtended]
-
-
-class MyModel(ModelBase, SQLModel, BaseModelMixin, table=True):
-    __tablename__ = 'non_admin_user_models'
-    __mapper_args__ = {'primary_key': ["pid"]}
-    pid: str
-    id: int
-    user_id: int = Field(default=0)
-
-
-class MyModelPublic(ModelPublic):
-    pass

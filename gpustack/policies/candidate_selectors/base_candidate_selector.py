@@ -12,13 +12,11 @@ from gpustack.schemas.models import (
     Model,
     ModelInstance,
     ModelInstanceSubordinateWorker,
+    is_omni_model,
 )
 from gpustack.schemas.workers import Worker
-from gpustack.utils.hub import (
-    get_hf_text_config,
-    get_max_model_len,
-    get_pretrained_config_with_fallback_sync,
-)
+from gpustack.utils.hub import get_hf_text_config, get_max_model_len
+from gpustack.scheduler.calculator import get_pretrained_config_sync
 from gpustack.utils.gpu import (
     abbreviate_worker_gpu_indexes,
     group_gpu_ids_by_worker,
@@ -93,7 +91,7 @@ class ModelParameters:
         """
 
         try:
-            pretrained_config = get_pretrained_config_with_fallback_sync(
+            pretrained_config = get_pretrained_config_sync(
                 model, trust_remote_code=True
             )
         except Exception as e:
@@ -204,7 +202,7 @@ class ScheduleCandidatesSelector(ABC):
         self._vram_totals_by_gpu_type_and_worker_and_gpu_idxs = {}
         self._workers_allocatable_resource_by_gpu_type = {}
 
-        if parse_model_params:
+        if parse_model_params and not is_omni_model(self._model):
             self._set_model_parameters()
             self._num_attention_heads = self._model_params.num_attention_heads
 

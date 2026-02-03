@@ -7,8 +7,8 @@ import ipaddress
 
 from gpustack_runtime.detector import (
     manufacturer_to_backend,
-    supported_manufacturers,
-    supported_backends,
+    available_manufacturers,
+    available_backends,
 )
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -17,7 +17,7 @@ from gpustack.utils import validators
 from gpustack.schemas.workers import (
     CPUInfo,
     FileSystemInfo,
-    GPUDeviceInfo,
+    GPUDeviceStatus,
     KernelInfo,
     MemoryInfo,
     MountPoint,
@@ -25,7 +25,7 @@ from gpustack.schemas.workers import (
     SwapInfo,
     SystemInfo,
     UptimeInfo,
-    GPUDevicesInfo,
+    GPUDevicesStatus,
     GPUNetworkInfo,
 )
 from gpustack.schemas.users import AuthProviderEnum
@@ -99,6 +99,8 @@ class Config(WorkerConfig, BaseSettings):
         ray_port_range: Port range for Ray services(vLLM distributed deployment using), specified as a string in the form 'N1-N2'. Both ends of the range are inclusive. Default is '41000-41999'.
         log_dir: Directory to store logs.
         bin_dir: Directory to store additional binaries, e.g., versioned backend executables.
+        benchmark_dir: Directory to store benchmark results.
+        benchmark_max_duration_seconds: Max duration for a benchmark before timeout. Disabled when unset.
         pipx_path: Path to the pipx executable, used to install versioned backends.
         system_reserved: Reserved system resources.
         tools_download_base_url: Base URL to download dependency tools.
@@ -214,6 +216,9 @@ class Config(WorkerConfig, BaseSettings):
         self.storage_dir = prepare_dir(
             self.storage_dir, os.path.join(self.data_dir, "storage")
         )
+        self.benchmark_dir = prepare_dir(
+            self.benchmark_dir, os.path.join(self.data_dir, "benchmarks")
+        )
 
         if self.token is None:
             self.token = read_registration_token(self.data_dir)
@@ -311,6 +316,7 @@ class Config(WorkerConfig, BaseSettings):
         os.makedirs(self.bin_dir, exist_ok=True)
         os.makedirs(self.log_dir, exist_ok=True)
         os.makedirs(self.storage_dir, exist_ok=True)
+        os.makedirs(self.benchmark_dir, exist_ok=True)
         # prepare gateway dirs
         os.makedirs(
             os.getenv("GPUSTACK_GATEWAY_DIR", self.higress_base_dir()),
@@ -442,7 +448,7 @@ class Config(WorkerConfig, BaseSettings):
 
         return system_info
 
-    def get_gpu_devices(self) -> GPUDevicesInfo:  # noqa: C901
+    def get_gpu_devices(self) -> GPUDevicesStatus:  # noqa: C901
         """get gpu devices from resources
         resource example:
         ```yaml
@@ -468,7 +474,7 @@ class Config(WorkerConfig, BaseSettings):
                   mtu: 8192                # optional
         ```
         """
-        gpu_devices: GPUDevicesInfo = []
+        gpu_devices: GPUDevicesStatus = []
         if not self.resources:
             return None
 
@@ -494,10 +500,10 @@ class Config(WorkerConfig, BaseSettings):
             if index is None:
                 raise Exception("GPU device index is required")
 
-            vendors = supported_manufacturers()
+            vendors = available_manufacturers()
             if vendor not in vendors:
                 raise Exception(
-                    f"Unsupported GPU device vendor, supported vendors are: {','.join(map(str, vendors))}"
+                    f"Unsupported GPU device vendor, available vendors are: {','.join(map(str, vendors))}"
                 )
 
             if not memory:
@@ -523,14 +529,14 @@ class Config(WorkerConfig, BaseSettings):
                 if gateway and not validators.ip(gateway):
                     raise Exception("GPU device network gateway is invalid")
 
-            types = supported_backends()
+            types = available_backends()
             if type_ not in types:
                 raise Exception(
-                    f"Unsupported GPU type, supported type are: {','.join(map(str, types))}"
+                    f"Unsupported GPU type, available type are: {','.join(map(str, types))}"
                 )
 
             gpu_devices.append(
-                GPUDeviceInfo(
+                GPUDeviceStatus(
                     index=index,
                     arch_family=arch_family,
                     compute_capability=compute_capability,

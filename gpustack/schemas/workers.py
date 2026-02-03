@@ -123,6 +123,9 @@ class GPUDeviceInfo(BaseModel):
     """
     Compute compatibility version of the GPU device, e.g. for NVIDIA GPUs.
     """
+
+
+class GPUDeviceStatus(GPUDeviceInfo):
     core: Optional[GPUCoreInfo] = Field(sa_column=Column(JSON), default=None)
     """
     Core information of the GPU device.
@@ -145,7 +148,7 @@ class GPUDeviceInfo(BaseModel):
     """
 
 
-GPUDevicesInfo = List[GPUDeviceInfo]
+GPUDevicesStatus = List[GPUDeviceStatus]
 
 
 class MountPoint(BaseModel):
@@ -256,7 +259,9 @@ class WorkerStatus(SystemInfo):
     rpc_servers: Deprecated
     """
 
-    gpu_devices: Optional[GPUDevicesInfo] = Field(sa_column=Column(JSON), default=None)
+    gpu_devices: Optional[GPUDevicesStatus] = Field(
+        sa_column=Column(JSON), default=None
+    )
     rpc_servers: Optional[Dict[int, RPCServer]] = Field(
         sa_column=Column(JSON), default=None
     )

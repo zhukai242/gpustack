@@ -18,14 +18,16 @@ from transformers import PretrainedConfig
 from huggingface_hub import HfApi
 from huggingface_hub.utils import GatedRepoError, HfHubHTTPError
 from requests.exceptions import HTTPError
-from sqlmodel.ext.asyncio.session import AsyncSession
 
 from gpustack.config.config import get_global_config
 from gpustack.schemas import ModelFile
-from gpustack.schemas.models import CategoryEnum, Model, SourceEnum, get_mmproj_filename
-from gpustack.schemas.workers import Worker
+from gpustack.schemas.models import (
+    CategoryEnum,
+    Model,
+    SourceEnum,
+    get_mmproj_filename,
+)
 from gpustack.utils.cache import is_cached, load_cache, save_cache
-from gpustack.client.worker_filesystem_client import WorkerFilesystemClient
 
 logger = logging.getLogger(__name__)
 
@@ -271,15 +273,13 @@ async def read_repo_file_content(  # noqa: C901
     model: Model,
     file_path: str,
     token: Optional[str] = None,
-    session: Optional[AsyncSession] = None,
-    workers: Optional[List[Worker]] = None,
 ) -> Optional[Dict[str, Any]]:
     """
     Read a JSON config file from the model's source.
 
     - Hugging Face: uses HfFileSystem to open `{repo_id}/{file_path}`.
     - ModelScope: downloads a snapshot matching `file_path` and cleaned automatically after reading locally.
-    - Local Path: reads from the local directory.
+    - Local Path: reads from the local directory only (no worker broadcast).
 
     Returns None if the file cannot be found or read.
     """
@@ -339,31 +339,13 @@ async def read_repo_file_content(  # noqa: C901
             if not local_path or not os.path.isdir(local_path):
                 return None
             fp = os.path.join(local_path, file_path)
-            if not os.path.exists(fp):
-                # Try to read from worker if session and workers are provided
-                async with WorkerFilesystemClient() as filesystem_client:
-                    for worker in workers or []:
-                        try:
-                            logger.info(
-                                f"Trying to read file {file_path} from worker {worker.id}"
-                            )
-                            config_dict = await filesystem_client.read_model_config(
-                                worker, fp
-                            )
-                            if config_dict:
-                                logger.info(
-                                    f"Successfully read file {file_path} from worker {worker.id}"
-                                )
-                                return config_dict
-                        except Exception as e:
-                            logger.warning(
-                                f"Failed to read file {file_path} from worker {worker.id}: {e}"
-                            )
-                            continue
-                return None
-            with open(fp, "r", encoding="utf-8") as f:
-                return json.load(f)
+            if os.path.exists(fp):
+                with open(fp, "r", encoding="utf-8") as f:
+                    return json.load(f)
 
+            # Path not exist locally, return None
+            # Worker broadcast logic has been moved to calculator.py
+            return None
         else:
             return None
     except Exception as e:
@@ -449,35 +431,38 @@ async def get_diffusion_model_weight_size(
     return sum_size
 
 
-async def get_pretrained_config(
+def get_pretrained_config_from_hub(
     model: Model,
-    session: Optional[AsyncSession] = None,
-    workers: Optional[List[Worker]] = None,
-    **kwargs,
-):
+    trust_remote_code: bool = False,
+) -> Any:
     """
-    Get the pretrained config of the model from Hugging Face or ModelScope.
+    Get pretrained config from Hugging Face or ModelScope hub.
+
+    This is a synchronous function that should be called via asyncio.to_thread()
+    in async contexts to avoid blocking the event loop.
+
     Args:
-        model: Model to get the pretrained config for.
+        model: Model with source HUGGING_FACE or MODEL_SCOPE
+        trust_remote_code: Whether to trust remote code
+
+    Returns:
+        PretrainedConfig object
+
+    Raises:
+        ValueError: If model source is not HUGGING_FACE or MODEL_SCOPE
     """
-
-    trust_remote_code = False
-    if (
-        model.backend_parameters and "--trust-remote-code" in model.backend_parameters
-    ) or kwargs.get("trust_remote_code"):
-        trust_remote_code = True
-
     global_config = get_global_config()
-    pretrained_config = None
+
     if model.source == SourceEnum.HUGGING_FACE:
         from transformers import AutoConfig
 
-        pretrained_config = AutoConfig.from_pretrained(
+        return AutoConfig.from_pretrained(
             model.huggingface_repo_id,
             token=global_config.huggingface_token,
             trust_remote_code=trust_remote_code,
             cache_dir=os.path.join(global_config.cache_dir, "huggingface"),
         )
+
     elif model.source == SourceEnum.MODEL_SCOPE:
         from modelscope import AutoConfig
 
@@ -490,143 +475,46 @@ async def get_pretrained_config(
         if os.path.exists(repo_cache_dir):
             local_files_only = True
             pretrained_model_name_or_path = repo_cache_dir
+
         with get_model_lock(model.model_scope_model_id):
-            pretrained_config = AutoConfig.from_pretrained(
+            return AutoConfig.from_pretrained(
                 pretrained_model_name_or_path,
                 trust_remote_code=trust_remote_code,
                 allow_file_pattern=MODELSCOPE_CONFIG_ALLOW_FILE_PATTERN,
                 cache_dir=model_scope_cache_dir,
                 local_files_only=local_files_only,
             )
-    elif model.source == SourceEnum.LOCAL_PATH:
-        if not os.path.exists(model.local_path):
-            # Try to read config from worker
-            async with WorkerFilesystemClient() as filesystem_client:
-                for worker in workers or []:
-                    try:
-                        logger.info(f"Trying to read config from worker {worker.id}")
-                        # Read config.json file
-                        config_path = os.path.join(model.local_path, "config.json")
-                        config_dict = await filesystem_client.read_model_config(
-                            worker, config_path
-                        )
-                        if not config_dict:
-                            continue
-
-                        logger.info(f"Successfully read config from worker {worker.id}")
-                        pretrained_config = PretrainedConfig.from_dict(config_dict)
-                        return pretrained_config
-                    except Exception as e:
-                        logger.warning(
-                            f"Failed to read config from worker {worker.id}: {e}"
-                        )
-                        continue
-
-            logger.warning(
-                f"Local Path: {model.readable_source} is not local to the server node and may reside on a worker node."
-            )
-            # Return an empty dict here to facilitate special handling by upstream methods.
-            return {}
-
-        from transformers import AutoConfig
-
-        pretrained_config = AutoConfig.from_pretrained(
-            model.local_path,
-            trust_remote_code=trust_remote_code,
-            local_files_only=True,
-        )
 
     else:
-        raise ValueError(f"Unsupported model source: {model.source}")
-
-    return pretrained_config
-
-
-async def get_pretrained_config_with_fallback(
-    model: Model,
-    session: Optional[AsyncSession] = None,
-    workers: Optional[List[Worker]] = None,
-    **kwargs,
-):
-    pretrained_config = None
-    try:
-        pretrained_config = await get_pretrained_config(
-            model, session=session, workers=workers, **kwargs
+        raise ValueError(
+            f"Unsupported model source for hub: {model.source}. "
+            f"Expected HUGGING_FACE or MODEL_SCOPE."
         )
-    except Exception as e:
-        if model.backend_version is not None or isinstance(e, ImportError):
-            logger.debug(
-                "Fallback to load config.json after AutoConfig.from_pretrained failed"
-            )
-            # Fallback:
-            # AutoConfig.from_pretrained performs strict architecture validation and may fail in several cases, like:
-            #   1. Models using custom or backend-specific architectures not recognized by the current Transformers version.
-            #   2. Newly released models whose architectures are not yet supported in older AutoConfig implementations.
-            #   3. Import-time failures caused by missing or conflicting dependencies
-            #      (e.g., LlamaFlashAttention2 import errors — see: https://github.com/deepseek-ai/DeepSeek-OCR/issues/7).
-            # In all such cases, fallback to loading config.json directly to avoid blocking model startup.
-            try:
-                # try to read config.json and ensure num_attention_heads not None.
-                config_dict = await read_repo_file_content(
-                    model,
-                    "config.json",
-                    token=get_global_config().huggingface_token,
-                    session=session,
-                    workers=workers,
-                )
-                if config_dict:
-                    try:
-                        pretrained_config = PretrainedConfig.from_dict(config_dict)
-                    except Exception as ce:
-                        logger.warning(f"read_repo_file_content failed: {ce}")
-            except Exception as ce:
-                logger.warning(f"Fallback to load config.json failed: {ce}")
-
-        if model.env and model.env.get("GPUSTACK_SKIP_MODEL_EVALUATION"):
-            # In GPUStack model evaluation skipping mode, an empty config is acceptable.
-            return pretrained_config
-
-        if any(
-            cat in model.categories
-            for cat in [CategoryEnum.IMAGE, CategoryEnum.UNKNOWN]
-        ):
-            # For image models, an empty config is acceptable.
-            return pretrained_config
-
-        if pretrained_config is None and (
-            CategoryEnum.LLM in model.categories or isinstance(e, ValueError)
-        ):
-            # LLM models or ValueError: empty config is NOT acceptable, raise error
-            raise e
-
-    return pretrained_config
 
 
-def get_pretrained_config_with_fallback_sync(model: Model, **kwargs):
+async def _fallback_read_config_json(model: Model) -> Optional[Any]:
     """
-    Synchronous wrapper for get_pretrained_config_with_fallback.
-    This is used in contexts where async is not available (e.g., worker backends).
-    """
-    import asyncio
+    Fallback to reading config.json directly when AutoConfig fails.
+    Only applicable for Hub sources (HUGGING_FACE, MODEL_SCOPE).
 
+    Args:
+        model: Model with Hub source
+
+    Returns:
+        PretrainedConfig if successful, None otherwise
+    """
     try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            # If there's already a running event loop, we need to run in a thread
-            import concurrent.futures
-
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                future = executor.submit(
-                    asyncio.run,
-                    get_pretrained_config_with_fallback(model, **kwargs),
-                )
-                return future.result()
-        else:
-            # No running event loop, we can use asyncio.run directly
-            return asyncio.run(get_pretrained_config_with_fallback(model, **kwargs))
-    except RuntimeError:
-        # No event loop at all, create a new one
-        return asyncio.run(get_pretrained_config_with_fallback(model, **kwargs))
+        # For Hub sources, we don't need session/workers
+        config_dict = await read_repo_file_content(
+            model,
+            "config.json",
+            token=get_global_config().huggingface_token,
+        )
+        if config_dict:
+            return PretrainedConfig.from_dict(config_dict)
+    except Exception as e:
+        logger.warning(f"Fallback to load config.json failed: {e}")
+    return None
 
 
 # Simplified from vllm.config._get_and_verify_max_len
@@ -793,21 +681,28 @@ def get_model_scope_model_min_gguf_path(
 async def has_diffusers_model_index(  # noqa: C901
     model: Model,
     token: Optional[str] = None,
-    session: Optional[AsyncSession] = None,
-    workers: Optional[List[Worker]] = None,
 ) -> bool:
     """Check whether the model source contains a model_index.json with
     the key "_diffusers_version".
 
+    This function only handles direct file access (Hub sources and local files).
+    For LOCAL_PATH models that require worker queries, use
+    check_diffusers_model_index_from_workers() in calculator.py instead.
+
     Supported sources:
     - Hugging Face: checks via HfFileSystem
     - ModelScope: downloads only model_index.json via snapshot_download and inspects
-    - Local Path: reads model_index.json in the provided directory
+    - Local Path: reads model_index.json in the local directory only
+
+    Args:
+        model: Model to check
+        token: Optional Hugging Face API token
+
+    Returns:
+        True if model_index.json contains _diffusers_version, False otherwise
     """
     try:
-        data = await read_repo_file_content(
-            model, "model_index.json", token=token, session=session, workers=workers
-        )
+        data = await read_repo_file_content(model, "model_index.json", token=token)
         if data is None:
             return False
 

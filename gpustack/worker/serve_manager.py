@@ -11,7 +11,6 @@ import logging
 
 from gpustack_runtime.deployer import (
     get_workload,
-    list_workloads,
     WorkloadStatusStateEnum,
     delete_workload,
 )
@@ -19,7 +18,6 @@ from gpustack_runtime.deployer.__utils__ import compare_versions
 
 from gpustack.api.exceptions import NotFoundException
 from gpustack.config.config import Config
-from gpustack import envs
 from gpustack.config import registration
 from gpustack.logging import (
     RedirectStdoutStderr,
@@ -27,7 +25,7 @@ from gpustack.logging import (
 from gpustack.schemas.inference_backend import InferenceBackend, is_built_in_backend
 from gpustack.utils import network, platform
 from gpustack.utils.attrs import set_attr
-from gpustack.utils.datetimex import parse_iso8601_to_utc
+from gpustack.utils.command import find_int_parameter
 from gpustack.utils.process import terminate_process_tree, add_signal_handlers
 from gpustack.worker.backends.ascend_mindie import AscendMindIEServer
 from gpustack.worker.backends.sglang import SGLangServer
@@ -43,6 +41,7 @@ from gpustack.schemas.models import (
     ModelInstance,
     ModelInstanceUpdate,
     ModelInstanceStateEnum,
+    ModelInstancesPublic,
     get_backend,
     DistributedServerCoordinateModeEnum,
     ModelInstanceSubordinateWorker,
@@ -253,7 +252,7 @@ class ServeManager:
                 # FIXME(thxCode): Another problem caused by skipping this check is that if we actively delete the workload on the subordinate worker,
                 #                 we may not be able to correct the state of the subordinate worker.
                 if not is_main_worker and not workload:
-                    return
+                    continue
                 # Only if not in ERROR state yet.
                 if model_instance.state != ModelInstanceStateEnum.ERROR:
                     with contextlib.suppress(NotFoundException):
@@ -284,7 +283,7 @@ class ServeManager:
                             }
                         # Update model instance.
                         self._update_model_instance(model_instance.id, **patch_dict)
-                return
+                continue
 
             # Otherwise, update model instance state to RUNNING if everything is fine.
             model = self._get_model(model_instance)
@@ -372,29 +371,6 @@ class ServeManager:
                     }
                 # Update model instance.
                 self._update_model_instance(model_instance.id, **patch_dict)
-
-    def cleanup_orphan_workloads(self):
-        current_instance_names = set()
-        model_instances_page = self._clientset.model_instances.list()
-        if model_instances_page.items:
-            for model_instance in model_instances_page.items:
-                deployment_metadata = model_instance.get_deployment_metadata(
-                    self._worker_id,
-                )
-                if deployment_metadata:
-                    current_instance_names.add(deployment_metadata.name)
-
-        workloads = list_workloads()
-        for w in workloads:
-            create_at = parse_iso8601_to_utc(w.created_at)
-            should_clean_orphan, _ = network.is_offline(
-                create_at, envs.WORKER_ORPHAN_WORKLOAD_CLEANUP_GRACE_PERIOD
-            )
-            if w.name not in current_instance_names and should_clean_orphan:
-                delete_workload(w.name)
-                logger.info(
-                    f"Deleted orphan workload {w.name}, created at {w.created_at}."
-                )
 
     @staticmethod
     def _serve_model_instance(
@@ -619,17 +595,31 @@ class ServeManager:
                     unavailable_ports=unavailable_ports,
                 )
                 mi.ports = [mi.port]
+                unavailable_ports.add(mi.port)
                 if (
                     mi.distributed_servers
                     and mi.distributed_servers.subordinate_workers
                 ):
+                    # Get RPC port for DP communication in vLLM backend.
+                    if backend == BackendEnum.VLLM:
+                        dps = find_int_parameter(
+                            model.backend_parameters,
+                            ["data-parallel-size", "dp"],
+                        )
+                        if dps and dps > 1:
+                            dp_connecting_port = network.get_free_port(
+                                port_range=self._config.service_port_range,
+                                unavailable_ports=unavailable_ports,
+                            )
+                            mi.ports.append(dp_connecting_port)
+                            unavailable_ports.add(dp_connecting_port)
                     # Get port for subordinate workers' communication.
-                    unavailable_ports.add(mi.port)
                     connecting_port = network.get_free_port(
                         port_range=self._config.service_port_range,
                         unavailable_ports=unavailable_ports,
                     )
                     mi.ports.append(connecting_port)
+                    unavailable_ports.add(connecting_port)
 
             logger.debug(
                 f"Starting model instance {mi.name}"
@@ -893,6 +883,26 @@ class ServeManager:
         inference_backend = self._inference_backend_manager.get_backend_by_name(backend)
 
         return inference_backend.health_check_path if inference_backend else None
+
+    def get_instance_ports_by_model_name(self, model_name: str) -> Dict[int, int]:
+        """
+        Get model instance IDs related to the given model name.
+
+        Args:
+            model_name: The model name to get instance IDs for.
+
+        Returns:
+            Model Instance id to its port mapping.
+        """
+        model_instances: ModelInstancesPublic = self._clientset.model_instances.list(
+            params={"model_name": model_name, "worker_id": self._worker_id}
+        )
+        model_instance_to_port: Dict[int, int] = {
+            mi.id: mi.port
+            for mi in model_instances.items
+            if mi.port and mi.state == ModelInstanceStateEnum.RUNNING
+        }
+        return model_instance_to_port
 
 
 def is_ready(

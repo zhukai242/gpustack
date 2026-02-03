@@ -17,9 +17,15 @@ from sqlalchemy.orm.state import InstanceState
 from gpustack.schemas.common import PaginatedList, Pagination
 from gpustack.server.bus import Event, EventType, event_bus
 from gpustack.server.db import async_session
+from gpustack import envs
 
 
 logger = logging.getLogger(__name__)
+
+# Semaphore to limit concurrent subscription initializations
+# This prevents exhausting the database connection pool when many workers
+# reconnect simultaneously (e.g., after server restart)
+_subscribe_init_semaphore = asyncio.Semaphore(envs.DB_SUBSCRIBE_INIT_CONCURRENCY)
 
 
 class CommitEvent:
@@ -386,6 +392,7 @@ class ActiveRecordMixin:
         page: int = 1,
         per_page: int = 100,
         order_by: Optional[List[Tuple[Union[str, Any], str]]] = None,
+        options: Optional[List] = None,
     ) -> PaginatedList[SQLModel]:
         """
         Return a paginated and optionally sorted list of objects matching criteria.
@@ -422,6 +429,9 @@ class ActiveRecordMixin:
             statement = statement.where(and_(*extra_conditions))
 
         # Set default ordering if not provided
+        if options:
+            statement = statement.options(*options)
+
         if not order_by:
             order_by = [("created_at", "desc")]
 
@@ -644,8 +654,9 @@ class ActiveRecordMixin:
     @classmethod
     async def count(cls, session: AsyncSession) -> int:
         """Return the number of records in the model."""
-
-        return len(await cls.all(session))
+        statement = select(func.count()).select_from(cls)
+        result = await session.exec(statement)
+        return result.one()
 
     @classmethod
     async def count_by_field(cls, session: AsyncSession, field: str, value: Any) -> int:
@@ -789,10 +800,8 @@ class ActiveRecordMixin:
             if hasattr(self, "deleted_at"):
                 # timestamp is stored without timezone in db
                 self.deleted_at = datetime.now(timezone.utc).replace(tzinfo=None)
-                await self.save(session, auto_commit=auto_commit)
-            await self._handle_cascade_delete(
-                session, soft=soft, auto_commit=auto_commit
-            )
+                await self.save(session, auto_commit=False)
+            await self._handle_cascade_delete(session, soft=soft, auto_commit=False)
         if not soft:
             await session.delete(self)
         if not auto_commit:
@@ -871,8 +880,9 @@ class ActiveRecordMixin:
             id(subscriber),
         )
 
-        async with async_session() as session:
-            initial_items = await cls.all(session, options=options)
+        async with _subscribe_init_semaphore:
+            async with async_session() as session:
+                initial_items = await cls.all(session, options=options)
 
         for item in initial_items:
             yield Event(type=EventType.CREATED, data=item)

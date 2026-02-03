@@ -14,6 +14,10 @@ import tenacity
 import uvicorn
 from urllib.parse import urlparse
 from starlette.middleware.base import BaseHTTPMiddleware
+from gpustack_runtime.deployer.k8s.deviceplugin import (
+    serve_async as kdp_serve_async,
+    get_resource_injection_policy,
+)
 
 from gpustack.api import exceptions
 from gpustack.config.config import (
@@ -38,6 +42,7 @@ from gpustack.logging import setup_logging
 from gpustack.utils.process import add_signal_handlers_in_loop
 from gpustack.utils.system_check import check_glibc_version
 from gpustack.utils.task import run_periodically_in_thread
+from gpustack.worker.benchmark_manager import BenchmarkManager
 from gpustack.worker.inference_backend_manager import InferenceBackendManager
 from gpustack.worker.model_file_manager import ModelFileManager
 from gpustack.worker.runtime_metrics_aggregator import RuntimeMetricsAggregator
@@ -48,10 +53,9 @@ from gpustack.worker.worker_manager import WorkerManager
 from gpustack.worker.collector import WorkerStatusCollector
 from gpustack.config.registration import read_worker_token
 from gpustack.config import registration
-from gpustack.worker.worker_gateway import WorkerGatewayController
-from gpustack.gateway.plugins import register as register_gateway_plugins
 from gpustack.gateway import init_async_k8s_config
 from gpustack.client.generated_http_client import default_versioned_prefix
+from gpustack.worker.workload_cleaner import WorkloadCleaner
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +67,8 @@ class Worker:
     _status_collector: WorkerStatusCollector
     _worker_manager: WorkerManager
     _serve_manager: ServeManager
+    _benchmark_manager: BenchmarkManager
+    _workload_cleaner: WorkloadCleaner
     _config: Config
     _worker_ip: Optional[str] = None
     _worker_ifname: Optional[str] = None
@@ -126,6 +132,17 @@ class Worker:
             worker_id_getter=self.worker_id,
             clientset_getter=self.clientset,
             cfg=self._config,
+        )
+
+        self._benchmark_manager = BenchmarkManager(
+            worker_id_getter=self.worker_id,
+            clientset_getter=self.clientset,
+            cfg=self._config,
+        )
+
+        self._workload_cleaner = WorkloadCleaner(
+            worker_id_getter=self.worker_id,
+            clientset_getter=self.clientset,
         )
 
     def _get_worker_name(self):
@@ -242,11 +259,13 @@ class Worker:
             # Check worker ip change every 15 seconds.
             run_periodically_in_thread(self._check_worker_ip_change, 15)
 
-        # Send heartbeat to the server every 30 seconds.
-        run_periodically_in_thread(self._heartbeat, 30)
+        # Send heartbeat to the server every WORKER_HEARTBEAT_INTERVAL seconds.
+        run_periodically_in_thread(self._heartbeat, envs.WORKER_HEARTBEAT_INTERVAL)
 
-        # Report the worker node status to the server every 30 seconds.
-        run_periodically_in_thread(self._worker_manager.sync_worker_status, 30)
+        # Report the worker node status to the server every WORKER_STATUS_SYNC_INTERVAL seconds.
+        run_periodically_in_thread(
+            self._worker_manager.sync_worker_status, envs.WORKER_STATUS_SYNC_INTERVAL
+        )
 
         # Start the worker server to expose APIs.
         self._create_async_task(self._serve_apis())
@@ -265,26 +284,23 @@ class Worker:
             envs.MODEL_INSTANCE_HEALTH_CHECK_INTERVAL,
         )
         run_periodically_in_thread(
-            self._serve_manager.cleanup_orphan_workloads, 120, 15
+            self._workload_cleaner.cleanup_orphan_workloads, 120, 15
         )
+        run_periodically_in_thread(self._benchmark_manager.sync_benchmark_state, 3, 15)
 
         self._create_async_task(self._serve_manager.watch_models())
         self._create_async_task(self._serve_manager.watch_model_instances_event())
         self._create_async_task(self._serve_manager.watch_model_instances())
+        self._create_async_task(self._benchmark_manager.watch_benchmarks_event())
 
         model_file_manager = ModelFileManager(
             worker_id=self._worker_id, clientset=self._clientset, cfg=self._config
         )
         self._create_async_task(model_file_manager.watch_model_files())
 
-        controller = WorkerGatewayController(
-            worker_id=self._worker_id,
-            cluster_id=self._cluster_id,
-            clientset=self._clientset,
-            cfg=self._config,
-        )
-        self._create_async_task(controller.sync_model_cache())
-        self._create_async_task(controller.start_model_instance_controller())
+        # Start Kubernetes Device Plugin server if allowed.
+        if get_resource_injection_policy() == "kdp":
+            self._create_async_task(kdp_serve_async(stop_event=asyncio.Event()))
 
         # wait for a while to let other tasks start
         await asyncio.sleep(0.5)
@@ -319,9 +335,8 @@ class Worker:
         app.state.config = self._config
         app.state.token = read_worker_token(self._config.data_dir)
         app.state.worker_ip_getter = self.worker_ip
-        app.state.model_by_instance_id = self._serve_manager._model_cache_by_instance
-        app.state.model_instance_by_instance_id = (
-            self._serve_manager._model_instance_by_instance_id
+        app.state.instance_port_by_model_name = (
+            self._serve_manager.get_instance_ports_by_model_name
         )
         app.add_middleware(BaseHTTPMiddleware, dispatch=proxy.set_port_from_model_name)
         app.include_router(route_config.router, prefix=default_versioned_prefix)
@@ -335,7 +350,6 @@ class Worker:
             endpoint=worker_auth,
             methods=["GET"],
         )
-        register_gateway_plugins(self._config, app)
         exceptions.register_handlers(app)
 
         config = uvicorn.Config(

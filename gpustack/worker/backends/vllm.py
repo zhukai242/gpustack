@@ -21,9 +21,14 @@ from gpustack.schemas.models import (
     SpeculativeAlgorithmEnum,
     SpeculativeConfig,
     ModelInstanceDeploymentMetadata,
+    is_omni_model,
 )
 from gpustack.utils import network
-from gpustack.utils.command import find_parameter
+from gpustack.utils.command import (
+    find_parameter,
+    find_bool_parameter,
+    find_int_parameter,
+)
 from gpustack.utils.envs import sanitize_env
 from gpustack.utils.unit import byte_to_gib
 from gpustack.worker.backends.base import (
@@ -105,6 +110,9 @@ class VLLMServer(InferenceServer):
 
         ports = self._get_configured_ports()
 
+        # Read container config from environment variables
+        container_config = self._get_container_env_config(env)
+
         run_container = Container(
             image=image,
             name="default",
@@ -115,6 +123,8 @@ class VLLMServer(InferenceServer):
                 command=command,
                 command_script=command_script,
                 args=command_args,
+                run_as_user=container_config.user,
+                run_as_group=container_config.group,
             ),
             envs=[
                 ContainerEnv(
@@ -175,6 +185,8 @@ class VLLMServer(InferenceServer):
                     command=ray_command,
                     command_script=command_script,
                     args=ray_command_args,
+                    run_as_user=container_config.user,
+                    run_as_group=container_config.group,
                 ),
                 envs=run_container.envs,
                 resources=run_container.resources,
@@ -195,7 +207,7 @@ class VLLMServer(InferenceServer):
         workload_plan = WorkloadPlan(
             name=deployment_metadata.name,
             host_network=True,
-            shm_size=10 * 1 << 30,  # 10 GiB
+            shm_size=int(container_config.shm_size_gib * (1 << 30)),
             containers=(
                 [run_container]
                 if not sidecar_container
@@ -268,11 +280,14 @@ class VLLMServer(InferenceServer):
         env["VLLM_HOST_IP"] = self._worker.ip
         # During distributed setup,
         # we must get more than one port here,
-        # so we use ports[1] for distributed initialization.
-        env["VLLM_PORT"] = str(self._model_instance.ports[1])
+        # so we use ports[-1] for distributed initialization.
+        env["VLLM_PORT"] = str(self._model_instance.ports[-1])
 
-        # Redirect Ray logs to stderr for easier debugging.
-        env["RAY_LOG_TO_STDERR"] = env.pop("RAY_LOG_TO_STDERR", "1")
+        # Disable Ray logging to stderr by default,
+        # see https://github.com/gpustack/gpustack/issues/4158#issuecomment-3809213348.
+        env["RAY_LOG_TO_STDERR"] = env.pop("RAY_LOG_TO_STDERR", "0")
+        # To reduce verbosity, set Ray backend log level to warning by default.
+        env["RAY_BACKEND_LOG_LEVEL"] = env.pop("RAY_BACKEND_LOG_LEVEL", "warning")
 
         if is_ascend(self._get_selected_gpu_devices()):
             # See https://vllm-ascend.readthedocs.io/en/latest/tutorials/multi-node_dsv3.2.html.
@@ -416,6 +431,22 @@ class VLLMServer(InferenceServer):
 
         if is_distributed:
             arguments.extend(["--distributed-executor-backend", "ray"])
+            dps = find_int_parameter(
+                self._model.backend_parameters, ["data-parallel-size", "dp"]
+            )
+            if dps and dps > 1:
+                # Prefer to use Ray backend for data parallelism if DP size is specified.
+                dpb = find_parameter(
+                    self._model.backend_parameters, ["data-parallel-backend", "dpb"]
+                )
+                if dpb is None:
+                    arguments.extend(["--data-parallel-backend", "ray"])
+                # Specify a port for DP RPC communication,
+                # we must get more than one port here, see gpustack/worker/serve_manager.py,
+                # so we use ports[1] for DP RPC communication.
+                arguments.extend(
+                    ["--data-parallel-rpc-port", str(self._model_instance.ports[1])]
+                )
 
         if self._model.extended_kv_cache and self._model.extended_kv_cache.enabled:
             vendor, _, _ = self._get_device_info()
@@ -438,6 +469,18 @@ class VLLMServer(InferenceServer):
                     "--enforce-eager",
                     "--dtype",
                     "float16",
+                ]
+            )
+
+        # Omni modalities
+        omni_enabled = find_bool_parameter(
+            self._model.backend_parameters,
+            ["omni"],
+        )
+        if is_omni_model(self._model) and not omni_enabled:
+            arguments.extend(
+                [
+                    "--omni",
                 ]
             )
 

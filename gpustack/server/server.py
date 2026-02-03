@@ -23,7 +23,7 @@ from gpustack.schemas.users import (
 from gpustack.schemas.api_keys import ApiKey
 from gpustack.schemas.workers import Worker
 from gpustack.schemas.clusters import Cluster, ClusterProvider, ClusterStateEnum
-from gpustack.schemas.models import Model
+from gpustack.schemas.model_routes import ModelRoute, ModelRouteTarget
 from gpustack.security import (
     JWTManager,
     generate_secure_password,
@@ -43,20 +43,33 @@ from gpustack.server.controllers import (
     ClusterController,
     WorkerPoolController,
     InferenceBackendController,
+    ModelRouteController,
+    ModelRouteTargetController,
+    ModelProviderController,
 )
 from gpustack.server.db import async_session
-from gpustack.server.init_db import init_db
+from gpustack.server.init_db import init_db, get_query_count
 from gpustack.scheduler.scheduler import Scheduler
 from gpustack.server.system_load import SystemLoadCollector
 from gpustack.server.update_check import UpdateChecker
 from gpustack.server.usage_buffer import flush_usage_to_db
+from gpustack.server.heartbeat_buffer import flush_heartbeats_to_db
 from gpustack.server.worker_instance_cleaner import WorkerInstanceCleaner
 from gpustack.server.worker_syncer import WorkerSyncer
 from gpustack.server.metrics_collector import GatewayMetricsCollector
 from gpustack.utils.process import add_signal_handlers_in_loop
 from gpustack.config.registration import write_registration_token
 from gpustack.exporter.exporter import MetricExporter
-from gpustack.gateway.utils import cleanup_orphaned_model_ingresses
+from gpustack.gateway.utils import (
+    model_ingress_prefix,
+    model_route_ingress_prefix,
+    model_route_selector,
+    model_route_ingress_name,
+    fallback_ingress_name,
+    cleanup_ingresses,
+    cleanup_selected_wasm_plugins,
+    cleanup_fallback_filters,
+)
 from gpustack.gateway import get_async_k8s_config
 from gpustack.envs import (
     GATEWAY_PORT_CHECK_INTERVAL,
@@ -122,9 +135,11 @@ class Server:
         self._start_worker_syncer()
         self._start_update_checker()
         self._start_model_usage_flusher()
+        self._start_heartbeat_flusher()
         self._start_worker_instance_cleaner()
         self._start_metrics_exporter()
         self._start_gateway_metrics_collector()
+        self._start_query_count_logger()
         self._start_default_registry_checker()
 
         jwt_manager = JWTManager(self._config.jwt_secret_key)
@@ -229,6 +244,15 @@ class Server:
         logger.debug("Scheduler started.")
 
     def _start_controllers(self):
+        model_provider_controller = ModelProviderController(self._config)
+        self._create_async_task(model_provider_controller.start())
+
+        model_route_target_controller = ModelRouteTargetController(self._config)
+        self._create_async_task(model_route_target_controller.start())
+
+        model_route_controller = ModelRouteController(self._config)
+        self._create_async_task(model_route_controller.start())
+
         model_controller = ModelController(self._config)
         self._create_async_task(model_controller.start())
 
@@ -268,6 +292,11 @@ class Server:
         self._create_async_task(flush_usage_to_db())
 
         logger.debug("Model usage flusher started.")
+
+    def _start_heartbeat_flusher(self):
+        self._create_async_task(flush_heartbeats_to_db())
+
+        logger.debug("Heartbeat flusher started.")
 
     def _start_worker_instance_cleaner(self):
         worker_instance_cleaner = WorkerInstanceCleaner()
@@ -381,6 +410,17 @@ class Server:
         # 立即启动HTTP服务器进程，因为它不依赖于API是否就绪
         http_server_process.start()
         logger.info(f"HTTP server process started with PID: {http_server_process.pid}")
+
+    def _start_query_count_logger(self):
+        """Start a background task to log query count periodically."""
+
+        async def log_query_count():
+            while True:
+                await asyncio.sleep(60)  # Log every minute
+                count = get_query_count()
+                logger.debug(f"[DB QUERY COUNT] Total queries since startup: {count}")
+
+        self._create_async_task(log_query_count())
 
     @staticmethod
     def _setup_data_dir(data_dir: str):
@@ -590,16 +630,56 @@ class Server:
     async def _cleanup_orphaned_gateway_data(self, session: AsyncSession):
         if self.config.gateway_mode == GatewayModeEnum.disabled:
             return
-        # Remove the orphaned ingresses of model
-        models = await Model.all_by_field(
+        # Remove the orphaned ingresses of model routes
+        model_routes = await ModelRoute.all_by_field(
             session=session, field="deleted_at", value=None
         )
-        model_ids = [model.id for model in models]
+        route_targets = await ModelRouteTarget.all_by_fields(
+            session=session,
+            fields={"deleted_at": None},
+        )
+        fallback_route_ids = [
+            ep.route_id
+            for ep in route_targets
+            if ep.fallback_status_codes is not None
+            and len(ep.fallback_status_codes) > 0
+        ]
+        expected_names = [
+            model_route_ingress_name(model_route.id) for model_route in model_routes
+        ]
+        expected_names.extend(
+            [
+                fallback_ingress_name(model_route_ingress_name(id))
+                for id in fallback_route_ids
+            ]
+        )
         k8s_config = get_async_k8s_config(cfg=self.config)
-        await cleanup_orphaned_model_ingresses(
+        await cleanup_ingresses(
             namespace=self.config.get_namespace(),
-            existing_model_ids=model_ids,
+            expected_names=expected_names,
             config=k8s_config,
+            cleanup_prefix=model_route_ingress_prefix,
+            reason="orphaned",
+        )
+        await cleanup_ingresses(
+            namespace=self.config.get_namespace(),
+            expected_names=expected_names,
+            config=k8s_config,
+            cleanup_prefix=model_ingress_prefix,
+            reason="legacy",
+        )
+        await cleanup_selected_wasm_plugins(
+            namespace=self.config.gateway_namespace,
+            expected_names=expected_names,
+            config=k8s_config,
+            extra_labels=model_route_selector,
+        )
+        await cleanup_fallback_filters(
+            namespace=self.config.get_namespace(),
+            expected_names=expected_names,
+            cleanup_prefix=model_route_ingress_prefix,
+            reason="orphaned",
+            k8s_config=k8s_config,
         )
 
     def _should_create_default_cluster(self) -> bool:

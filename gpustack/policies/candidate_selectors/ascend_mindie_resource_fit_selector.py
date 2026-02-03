@@ -27,7 +27,7 @@ from gpustack.schemas.models import (
     SourceEnum,
     ModelInstanceSubordinateWorker,
 )
-from gpustack.schemas.workers import GPUDeviceInfo, Worker
+from gpustack.schemas.workers import GPUDeviceStatus, Worker
 from gpustack.config import Config
 from gpustack.utils.convert import safe_int
 from gpustack.utils.hub import (
@@ -60,7 +60,7 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
         # Temporary indexer for caching worker's allocatable, avoiding redundant database queries: {Worker ID: Allocatable}.
         self.__worker_alloc_idx: Dict[int, Allocatable] = {}
         # Temporary indexer for caching worker's devices that sort by VRAM size: {Worker ID: sorted([Device 0, Device 1, ...])}.
-        self.__worker_sorted_devices_idx: Dict[int, List[GPUDeviceInfo]] = {}
+        self.__worker_sorted_devices_idx: Dict[int, List[GPUDeviceStatus]] = {}
 
         # Store and format the abnormal message during scheduling, finally it will be extended to self._diagnostic_messages.
         self._scheduling_messages: ListMessageBuilder = ListMessageBuilder([])
@@ -70,7 +70,9 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
             max_seq_len = 8192
         self._serving_params.max_seq_len = max_seq_len
         try:
-            self._serving_params.from_args(model.backend_parameters or [])
+            self._serving_params.from_args_and_envs(
+                model.backend_parameters or [], model.env or {}
+            )
         except Exception as e:
             raise ValueError(
                 f"Failed to parse model {model.name} serve parameters: {e}"
@@ -91,7 +93,7 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
             return None, None
 
         serving_params = AscendMindIEParameters()
-        serving_params.from_args(model.backend_parameters)
+        serving_params.from_args_and_envs(model.backend_parameters, model.env or {})
 
         pp, tp, dp, cp, sp, moe_tp, moe_ep, ws = (
             serving_params.pipeline_parallel_size,
@@ -394,8 +396,8 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
 
     async def _get_available_worker_devices_idx(  # noqa: C901
         self, workers, ram_request
-    ) -> Dict[Worker, Dict[int, GPUDeviceInfo]]:
-        available_worker_devices_idx: Dict[Worker, Dict[int, GPUDeviceInfo]] = {}
+    ) -> Dict[Worker, Dict[int, GPUDeviceStatus]]:
+        available_worker_devices_idx: Dict[Worker, Dict[int, GPUDeviceStatus]] = {}
         for worker in workers:
             # Skip if the worker does not have devices.
             if not worker.status.gpu_devices:
@@ -418,7 +420,7 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
                 continue
 
             # Get selected devices of the worker: {Device Index: Device}.
-            selected_devices_idx: Dict[int, GPUDeviceInfo] = {
+            selected_devices_idx: Dict[int, GPUDeviceStatus] = {
                 device.index: device
                 for device in self.__worker_sorted_devices_idx[worker.id]
                 if device.type == "cann"

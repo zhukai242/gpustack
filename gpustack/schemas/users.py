@@ -21,10 +21,11 @@ from .common import PaginatedList
 from ..mixins import BaseModelMixin
 from .clusters import Cluster
 from .workers import Worker
-from gpustack.schemas.links import ModelUserLink
+from gpustack.schemas.links import UserModelRouteLink
 
 if TYPE_CHECKING:
     from .api_keys import ApiKey
+    from gpustack.schemas.model_routes import ModelRoute
     from gpustack.schemas.models import Model
 
 
@@ -153,9 +154,9 @@ class User(UserBase, BaseModelMixin, table=True):
         back_populates='user',
         sa_relationship_kwargs={"cascade": "delete", "lazy": "noload"},
     )
-    models: List["Model"] = Relationship(
+    routes: List["ModelRoute"] = Relationship(
         back_populates="users",
-        link_model=ModelUserLink,
+        link_model=UserModelRouteLink,
         sa_relationship_kwargs={"lazy": "noload"},
     )
     created_models: List["Model"] = Relationship(

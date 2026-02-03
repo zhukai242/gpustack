@@ -132,6 +132,12 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
         default=get_gpustack_env("IMAGE_REPO"),
     )
     group.add_argument(
+        "--benchmark-image-repo",
+        type=str,
+        help="Override the default benchmark image repository gpustack/benchmark-runner for the GPUStack benchmark container.",
+        default=get_gpustack_env("BENCHMARK_IMAGE_REPO"),
+    )
+    group.add_argument(
         "--gateway-mode",
         type=str,
         help="Gateway running mode. Options: embedded, in-cluster, external, disabled, or auto (default).",
@@ -321,6 +327,12 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
         default=get_gpustack_env("RAY_PORT_RANGE"),
     )
     group.add_argument(
+        "--benchmark-max-duration-seconds",
+        type=int,
+        help="Max duration for a benchmark before timeout. Disabled when unset.",
+        default=get_gpustack_env("BENCHMARK_MAX_DURATION_SECONDS"),
+    )
+    group.add_argument(
         "--disable-worker-metrics",
         action=OptionalBoolAction,
         help="Disable worker metrics.",
@@ -339,6 +351,12 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
         type=str,
         help="Directory to store logs.",
         default=get_gpustack_env("LOG_DIR"),
+    )
+    group.add_argument(
+        "--benchmark-dir",
+        type=str,
+        help="Directory to store benchmark results.",
+        default=get_gpustack_env("BENCHMARK_DIR"),
     )
     group.add_argument(
         "--system-reserved",
@@ -627,6 +645,7 @@ def set_common_options(args, config_data: dict):
         "system_default_container_registry",
         "image_name_override",
         "image_repo",
+        "benchmark_image_repo",
         "advertise_address",
         "port",
         "tls_port",
@@ -706,7 +725,9 @@ def set_worker_options(args, config_data: dict):
         "worker_metrics_port",
         "service_port_range",
         "ray_port_range",
+        "benchmark_max_duration_seconds",
         "log_dir",
+        "benchmark_dir",
         "system_reserved",
         "tools_download_base_url",
         "enable_hf_transfer",

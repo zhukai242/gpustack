@@ -4,9 +4,14 @@ import os
 
 # Database configuration
 DB_ECHO = os.getenv("GPUSTACK_DB_ECHO", "false").lower() == "true"
-DB_POOL_SIZE = int(os.getenv("GPUSTACK_DB_POOL_SIZE", 5))
+DB_POOL_SIZE = int(os.getenv("GPUSTACK_DB_POOL_SIZE", 10))
 DB_MAX_OVERFLOW = int(os.getenv("GPUSTACK_DB_MAX_OVERFLOW", 10))
 DB_POOL_TIMEOUT = int(os.getenv("GPUSTACK_DB_POOL_TIMEOUT", 30))
+# Maximum concurrent subscriptions that can perform initial DB list queries
+# This prevents connection pool exhaustion when many workers reconnect simultaneously
+DB_SUBSCRIBE_INIT_CONCURRENCY = int(
+    os.getenv("GPUSTACK_DB_SUBSCRIBE_INIT_CONCURRENCY", 20)
+)
 
 # Proxy configuration
 PROXY_TIMEOUT = int(os.getenv("GPUSTACK_PROXY_TIMEOUT_SECONDS", 1800))
@@ -19,16 +24,32 @@ JWT_TOKEN_EXPIRE_MINUTES = int(os.getenv("GPUSTACK_JWT_TOKEN_EXPIRE_MINUTES", 12
 
 # Higress plugin configuration
 HIGRESS_EXT_AUTH_TIMEOUT_MS = int(
-    os.getenv("GPUSTACK_HIGRESS_EXT_AUTH_TIMEOUT_MS", 3000)
+    os.getenv("GPUSTACK_HIGRESS_EXT_AUTH_TIMEOUT_MS", 30000)
 )
 
 # Worker configuration
+WORKER_HEARTBEAT_INTERVAL = int(
+    os.getenv("GPUSTACK_WORKER_HEARTBEAT_INTERVAL", 30)
+)  # in seconds
+WORKER_STATUS_SYNC_INTERVAL = int(
+    os.getenv("GPUSTACK_WORKER_STATUS_SYNC_INTERVAL", 30)
+)  # in seconds
 WORKER_HEARTBEAT_GRACE_PERIOD = int(
     os.getenv("GPUSTACK_WORKER_HEARTBEAT_GRACE_PERIOD", 150)
 )  # 2.5 minutes in seconds
 WORKER_ORPHAN_WORKLOAD_CLEANUP_GRACE_PERIOD = int(
     os.getenv("GPUSTACK_WORKER_ORPHAN_WORKLOAD_CLEANUP_GRACE_PERIOD", 300)
 )  # 5 minutes in seconds
+WORKER_ORPHAN_BENCHMARK_WORKLOAD_CLEANUP_GRACE_PERIOD = int(
+    os.getenv("GPUSTACK_WORKER_ORPHAN_BENCHMARK_WORKLOAD_CLEANUP_GRACE_PERIOD", 300)
+)  # 5 minutes in seconds
+# Worker unreachable check mode: auto, enabled, disabled
+# - auto: automatically disable check when worker count > 50 (default)
+# - enabled: always perform unreachable check
+# - disabled: never perform unreachable check
+WORKER_UNREACHABLE_CHECK_MODE = os.getenv(
+    "GPUSTACK_WORKER_UNREACHABLE_CHECK_MODE", "auto"
+).lower()
 
 # Model instance configuration
 MODEL_INSTANCE_RESCHEDULE_GRACE_PERIOD = int(
@@ -73,3 +94,9 @@ DEFAULT_CLUSTER_KUBERNETES = (
 )
 
 AUTO_GENERATE_UUID = os.getenv("GPUSTACK_AUTO_GENERATE_UUID", "false").lower() == "true"
+
+# Benchmark configuration
+BENCHMARK_DATASET_SHAREGPT_PATH = os.getenv(
+    "GPUSTACK_BENCHMARK_DATASET_SHAREGPT_PATH",
+    "/workspace/benchmark-runner/sharegpt_data/ShareGPT_V3_unfiltered_cleaned_split.json",
+)

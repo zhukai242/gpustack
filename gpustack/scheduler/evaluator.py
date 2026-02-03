@@ -27,10 +27,10 @@ from gpustack.schemas.model_evaluations import (
 from gpustack.schemas.models import (
     ModelInstance,
     BackendEnum,
-    CategoryEnum,
     SourceEnum,
     get_backend,
     is_gguf_model,
+    is_audio_model,
 )
 from gpustack.schemas.workers import Worker, WorkerStateEnum
 from gpustack.server.worker_selector import WorkerSelector
@@ -289,19 +289,6 @@ async def evaluate_environment(
     workers: List[Worker],
 ) -> Tuple[bool, List[str]]:
     backend = get_backend(model)
-    has_linux_workers = any(worker.labels.get("os") == "linux" for worker in workers)
-    if backend == BackendEnum.VLLM and not has_linux_workers:
-        return False, ["The model requires Linux workers but none are available."]
-
-    only_windows_workers = all(
-        worker.labels.get("os") == "windows" for worker in workers
-    )
-    if (
-        only_windows_workers
-        and backend == BackendEnum.VOX_BOX
-        and CategoryEnum.TEXT_TO_SPEECH.value in model.categories
-    ):
-        return False, ["The model is not supported on Windows workers."]
 
     if backend == BackendEnum.ASCEND_MINDIE and not any_gpu_match(
         workers, lambda gpu: gpu.vendor == ManufacturerEnum.ASCEND.value
@@ -364,7 +351,7 @@ async def evaluate_model_metadata(
                             # Path not found on any worker
                             return False, [
                                 "The model file path you specified does not exist on the GPUStack server or any worker. "
-                                "Please ensure the model file is accessible from at least one worker."
+                                "Please ensure the model file is accessible from at least one node."
                             ]
                 except Exception as e:
                     logger.warning(
@@ -395,12 +382,10 @@ async def evaluate_model_metadata(
             await scheduler.evaluate_gguf_model(config, model)
         elif model.backend == BackendEnum.VOX_BOX:
             await scheduler.evaluate_vox_box_model(config, model)
-        else:
+        elif not is_audio_model(model):
             await scheduler.evaluate_pretrained_config(
                 model, session=session, workers=workers
             )
-
-        set_default_worker_selector(model)
     except Exception as e:
         if model.env and model.env.get("GPUSTACK_SKIP_MODEL_EVALUATION"):
             logger.warning(f"Ignore model evaluation error for model {model.name}: {e}")
@@ -409,19 +394,6 @@ async def evaluate_model_metadata(
         return False, [str(e)]
 
     return True, []
-
-
-def set_default_worker_selector(
-    model: ModelSpec,
-) -> ModelSpec:
-    if (
-        not model.worker_selector
-        and not model.gpu_selector
-        and get_backend(model) == BackendEnum.VLLM
-    ):
-        # vLLM models are only supported on Linux
-        model.worker_selector = {"os": "linux"}
-    return model
 
 
 async def evaluate_model_input(

@@ -634,6 +634,29 @@ model_sets:
         - --logits_processors=vllm.model_executor.models.deepseek_ocr:NGramPerReqLogitsProcessor
         - --no-enable-prefix-caching
         - --mm-processor-cache-gb=0
+- name: PaddleOCR-VL-1.5
+  description: PaddleOCR-VL-1.5 is an advanced optical character recognition (OCR) vision-language model developed by PaddlePaddle. It is designed to accurately extract and understand text from images and documents.
+  home: https://www.paddleocr.com
+  icon: /static/catalog_icons/paddlepaddle.jpeg
+  size: 0.9
+  categories:
+    - llm
+  capabilities:
+    - vision
+  licenses:
+    - apache-2.0
+  release_date: "2026-01-29"
+  specs:
+    - mode: standard
+      quantization: "BF16"
+      source: huggingface
+      huggingface_repo_id: PaddlePaddle/PaddleOCR-VL-1.5
+      backend: vLLM
+      backend_parameters:
+        - --trust-remote-code
+        - --max-num-batched-tokens=16384
+        - --no-enable-prefix-caching
+        - --mm-processor-cache-gb=0
 - name: Deepseek-V3.2
   description: 'DeepSeek-V3.2 is a model that balances computational efficiency with strong reasoning and agent capabilities through three technical innovations: DeepSeek Sparse Attention (DSA), Scalable Reinforcement Learning Framework, Large-Scale Agentic Task Synthesis Pipeline.'
   home: https://www.deepseek.com
@@ -800,6 +823,54 @@ model_sets:
       categories:
         - embedding
       backend: vLLM
+- name: Qwen3-VL-Embedding-2B
+  description: Qwen3-VL-Embedding is a multimodal embedding model series optimized for multimodal retrieval, clustering, and classification. It supports image-text retrieval and unified multimodal representation learning with 30+ languages support.
+  home: https://qwenlm.github.io
+  icon: /static/catalog_icons/qwen.png
+  size: 2
+  categories:
+    - embedding
+  capabilities:
+    - vision
+    - dimensions/2048
+    - max_tokens/32K
+  licenses:
+    - apache-2.0
+  release_date: "2026-01-08"
+  specs:
+    - mode: standard
+      quantization: "BF16"
+      source: huggingface
+      huggingface_repo_id: Qwen/Qwen3-VL-Embedding-2B
+      categories:
+        - embedding
+      backend: vLLM
+      backend_parameters:
+        - --runner=pooling
+- name: Qwen3-VL-Embedding-8B
+  description: Qwen3-VL-Embedding is a multimodal embedding model series optimized for multimodal retrieval, clustering, and classification. It supports image-text retrieval and unified multimodal representation learning with 30+ languages support.
+  home: https://qwenlm.github.io
+  icon: /static/catalog_icons/qwen.png
+  size: 8
+  categories:
+    - embedding
+  capabilities:
+    - vision
+    - dimensions/4096
+    - max_tokens/32K
+  licenses:
+    - apache-2.0
+  release_date: "2026-01-08"
+  specs:
+    - mode: standard
+      quantization: "BF16"
+      source: huggingface
+      huggingface_repo_id: Qwen/Qwen3-VL-Embedding-8B
+      categories:
+        - embedding
+      backend: vLLM
+      backend_parameters:
+        - --runner=pooling
 - name: BGE-M3
   description: BGE-M3 is a new model from BAAI distinguished for its versatility in Multi-Functionality, Multi-Linguality, and Multi-Granularity.
   home: https://bge-model.com
@@ -983,6 +1054,52 @@ model_sets:
       backend: vLLM
       backend_parameters:
         - '--hf_overrides={"architectures":["Qwen3ForSequenceClassification"],"classifier_from_token":["no","yes"],"is_original_qwen3_reranker":true}'
+- name: Qwen3-VL-Reranker-2B
+  description: Qwen3-VL-Reranker is a multimodal text reranking model series optimized for multimodal retrieval, clustering, classification, and bitext mining. It consistently outperforms the base embedding model and baseline rerankers.
+  home: https://qwenlm.github.io
+  icon: /static/catalog_icons/qwen.png
+  size: 2
+  categories:
+    - reranker
+  capabilities:
+    - vision
+    - max_tokens/32K
+  licenses:
+    - apache-2.0
+  release_date: "2026-01-08"
+  specs:
+    - mode: standard
+      quantization: "BF16"
+      source: huggingface
+      huggingface_repo_id: Qwen/Qwen3-VL-Reranker-2B
+      categories:
+        - reranker
+      backend: vLLM
+      backend_parameters:
+        - '--hf_overrides={"architectures":["Qwen3VLForSequenceClassification"],"classifier_from_token":["no","yes"],"is_original_qwen3_reranker":true}'
+- name: Qwen3-VL-Reranker-8B
+  description: Qwen3-VL-Reranker is a multimodal text reranking model series optimized for multimodal retrieval, clustering, classification, and bitext mining. It consistently outperforms the base embedding model and baseline rerankers, with the 8B model showing particularly strong results.
+  home: https://qwenlm.github.io
+  icon: /static/catalog_icons/qwen.png
+  size: 8
+  categories:
+    - reranker
+  capabilities:
+    - vision
+    - max_tokens/32K
+  licenses:
+    - apache-2.0
+  release_date: "2026-01-08"
+  specs:
+    - mode: standard
+      quantization: "BF16"
+      source: huggingface
+      huggingface_repo_id: Qwen/Qwen3-VL-Reranker-8B
+      categories:
+        - reranker
+      backend: vLLM
+      backend_parameters:
+        - '--hf_overrides={"architectures":["Qwen3VLForSequenceClassification"],"classifier_from_token":["no","yes"],"is_original_qwen3_reranker":true}'
 - name: BGE-Reranker-V2-M3
   description: BGE-Reranker-V2-M3 is a reranker model from BAAI.
   home: https://bge-model.com
@@ -1043,6 +1160,44 @@ model_sets:
       backend_version: 0.5.6.post2
       env:
         GPUSTACK_MODEL_VRAM_CLAIM: "37580963840" # 35 GiB, observed empirically
+- name: FLUX.2-klein-4B
+  description: FLUX.2-klein-4B is a 4 billion parameter image generation model from Black Forest Labs.
+  home: https://blackforestlabs.ai
+  icon: /static/catalog_icons/blackforestlabs.png
+  size: 4
+  categories:
+    - image
+  licenses:
+    - apache-2.0
+  release_date: "2026-01-15"
+  specs:
+    - mode: standard
+      quantization: "BF16"
+      source: huggingface
+      huggingface_repo_id: black-forest-labs/FLUX.2-klein-4B
+      backend: vLLM
+      backend_version: 0.14.1
+      backend_parameters:
+        - --omni
+- name: FLUX.2-klein-9B
+  description: FLUX.2-klein-9B is a 9 billion parameter image generation model from Black Forest Labs.
+  home: https://blackforestlabs.ai
+  icon: /static/catalog_icons/blackforestlabs.png
+  size: 9
+  categories:
+    - image
+  licenses:
+    - apache-2.0
+  release_date: "2026-01-15"
+  specs:
+    - mode: standard
+      quantization: "BF16"
+      source: huggingface
+      huggingface_repo_id: black-forest-labs/FLUX.2-klein-9B
+      backend: vLLM
+      backend_version: 0.14.1
+      backend_parameters:
+        - --omni
 - name: Qwen-Image
   description: Qwen-Image is an image generation foundation model in the Qwen series that achieves significant advances in complex text rendering and precise image editing.
   home: https://qwen.ai
@@ -1056,14 +1211,14 @@ model_sets:
   specs:
     - mode: standard
       quantization: "BF16"
-      gpu_filters:
-        vendor: nvidia
       source: huggingface
       huggingface_repo_id: Qwen/Qwen-Image
-      backend: SGLang
-      backend_version: 0.5.6.post2
+      backend: vLLM
+      backend_version: 0.14.1
+      backend_parameters:
+        - --omni
 - name: Qwen-Image-Edit
-  description: Built upon our 20B Qwen-Image model, Qwen-Image-Edit successfully extends Qwen-Image’s unique text rendering capabilities to image editing tasks, enabling precise text editing.
+  description: Built upon the 20B Qwen-Image model, Qwen-Image-Edit successfully extends Qwen-Image's unique text rendering capabilities to image editing tasks, enabling precise text editing.
   home: https://qwen.ai
   icon: /static/catalog_icons/qwen.png
   size: 20
@@ -1081,6 +1236,44 @@ model_sets:
       huggingface_repo_id: Qwen/Qwen-Image-Edit
       backend: SGLang
       backend_version: 0.5.6.post2
+- name: Qwen-Image-2512
+  description: Qwen-Image-2512 is the December update of Qwen-Image's text-to-image foundational model, delivering enhanced image generation capabilities.
+  home: https://qwen.ai
+  icon: /static/catalog_icons/qwen.png
+  size: 20
+  categories:
+    - image
+  licenses:
+    - apache-2.0
+  release_date: "2025-12-30"
+  specs:
+    - mode: standard
+      quantization: "BF16"
+      source: huggingface
+      huggingface_repo_id: Qwen/Qwen-Image-2512
+      backend: vLLM
+      backend_version: 0.14.1
+      backend_parameters:
+        - --omni
+- name: Z-Image
+  description: Z-Image is the foundation model of the Z-Image family, engineered for good quality, robust generative diversity, broad stylistic coverage, and precise prompt adherence.
+  home: https://qwen.ai
+  icon: /static/catalog_icons/qwen.png
+  size: 6
+  categories:
+    - image
+  licenses:
+    - apache-2.0
+  release_date: "2026-01-28"
+  specs:
+    - mode: standard
+      quantization: "BF16"
+      source: huggingface
+      huggingface_repo_id: Tongyi-MAI/Z-Image
+      backend: vLLM
+      backend_version: 0.14.1
+      backend_parameters:
+        - --omni
 - name: Z-Image-Turbo
   description: Z-Image is a powerful and highly efficient image generation model with 6B parameters.
   home: https://qwen.ai
@@ -1094,12 +1287,14 @@ model_sets:
   specs:
     - mode: standard
       quantization: "BF16"
-      gpu_filters:
-        vendor: nvidia
       source: huggingface
       huggingface_repo_id: Tongyi-MAI/Z-Image-Turbo
-      backend: SGLang
-      backend_version: 0.5.6.post2
+      backend: vLLM
+      backend_version: 0.14.1
+      backend_parameters:
+        - --omni
+      env:
+        GPUSTACK_MODEL_VRAM_CLAIM: "24696061952" # 23 GiB observed. Weight file size is 33 GiB in F32 while vLLM loads in BF16.
 - name: Qwen3-VL-8B-Instruct
   description: Qwen3-VL-8B-Instruct is a vision-language model that delivers comprehensive upgrades across text understanding, visual perception, and reasoning capabilities, supporting image/video/text unified understanding.
   home: https://qwen.ai
@@ -1406,6 +1601,101 @@ model_sets:
       source: huggingface
       huggingface_repo_id: nari-labs/Dia-1.6B
       backend: VoxBox
+- name: Qwen3-TTS-12Hz-1.7B-Base
+  description: Qwen3-TTS-12Hz-1.7B-Base is a text-to-speech model from the Qwen3-TTS series with 1.7B parameters, supporting 12kHz audio generation.
+  home: https://qwen.ai
+  icon: /static/catalog_icons/qwen.png
+  size: 1.7
+  categories:
+    - text_to_speech
+  licenses:
+    - apache-2.0
+  release_date: "2026-01-22"
+  specs:
+    - mode: standard
+      quantization: "BF16"
+      source: huggingface
+      huggingface_repo_id: Qwen/Qwen3-TTS-12Hz-1.7B-Base
+      backend: vLLM
+      backend_version: 0.14.1
+      backend_parameters:
+        - --omni
+- name: Qwen3-TTS-12Hz-1.7B-CustomVoice
+  description: Qwen3-TTS-12Hz-1.7B-CustomVoice is a text-to-speech model from the Qwen3-TTS series with 1.7B parameters, supporting custom voice cloning and 12kHz audio generation.
+  home: https://qwen.ai
+  icon: /static/catalog_icons/qwen.png
+  size: 1.7
+  categories:
+    - text_to_speech
+  licenses:
+    - apache-2.0
+  release_date: "2026-01-22"
+  specs:
+    - mode: standard
+      quantization: "BF16"
+      source: huggingface
+      huggingface_repo_id: Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice
+      backend: vLLM
+      backend_version: 0.14.1
+      backend_parameters:
+        - --omni
+- name: Qwen3-TTS-12Hz-1.7B-VoiceDesign
+  description: Qwen3-TTS-12Hz-1.7B-VoiceDesign is a text-to-speech model from the Qwen3-TTS series with 1.7B parameters, supporting voice design and 12kHz audio generation.
+  home: https://qwen.ai
+  icon: /static/catalog_icons/qwen.png
+  size: 1.7
+  categories:
+    - text_to_speech
+  licenses:
+    - apache-2.0
+  release_date: "2026-01-22"
+  specs:
+    - mode: standard
+      quantization: "BF16"
+      source: huggingface
+      huggingface_repo_id: Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign
+      backend: vLLM
+      backend_version: 0.14.1
+      backend_parameters:
+        - --omni
+- name: Qwen3-TTS-12Hz-0.6B-Base
+  description: Qwen3-TTS-12Hz-0.6B-Base is a text-to-speech model from the Qwen3-TTS series with 0.6B parameters, supporting 12kHz audio generation.
+  home: https://qwen.ai
+  icon: /static/catalog_icons/qwen.png
+  size: 0.6
+  categories:
+    - text_to_speech
+  licenses:
+    - apache-2.0
+  release_date: "2026-01-22"
+  specs:
+    - mode: standard
+      quantization: "BF16"
+      source: huggingface
+      huggingface_repo_id: Qwen/Qwen3-TTS-12Hz-0.6B-Base
+      backend: vLLM
+      backend_version: 0.14.1
+      backend_parameters:
+        - --omni
+- name: Qwen3-TTS-12Hz-0.6B-CustomVoice
+  description: Qwen3-TTS-12Hz-0.6B-CustomVoice is a text-to-speech model from the Qwen3-TTS series with 0.6B parameters, supporting custom voice cloning and 12kHz audio generation.
+  home: https://qwen.ai
+  icon: /static/catalog_icons/qwen.png
+  size: 0.6
+  categories:
+    - text_to_speech
+  licenses:
+    - apache-2.0
+  release_date: "2026-01-22"
+  specs:
+    - mode: standard
+      quantization: "BF16"
+      source: huggingface
+      huggingface_repo_id: Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice
+      backend: vLLM
+      backend_version: 0.14.1
+      backend_parameters:
+        - --omni
 - name: SenseVoice-Small
   description: SenseVoice is a speech foundation model with multiple speech understanding capabilities, including automatic speech recognition (ASR), spoken language identification (LID), speech emotion recognition (SER), and audio event detection (AED).
   home: https://github.com/FunAudioLLM
@@ -1421,3 +1711,5 @@ model_sets:
       source: huggingface
       huggingface_repo_id: FunAudioLLM/SenseVoiceSmall
       backend: VoxBox
+      env:
+        GPUSTACK_MODEL_VRAM_CLAIM: "12884901888" # 12 GiB, it depends on the audio length. This value works for ~10 minutes audio input.
