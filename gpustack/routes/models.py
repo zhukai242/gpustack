@@ -325,13 +325,12 @@ async def create_model(
         )
 
     await validate_model_in(session, model_in)
+    # Set created_by to current user's ID
+    model_in.created_by = current_user.id
     model_in_dict = model_in.model_dump(exclude={"enable_model_route"})
 
     try:
         await revoke_model_access_cache(session=session)
-        # Set created_by to current user's ID
-        model_in.created_by = current_user.id
-        model = await Model.create(session, model_in)
         should_create_route = (
             model_in.enable_model_route is not None and model_in.enable_model_route
         )
