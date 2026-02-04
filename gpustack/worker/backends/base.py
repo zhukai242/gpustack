@@ -43,7 +43,7 @@ from gpustack.server.bus import Event
 from gpustack.utils.config import apply_registry_override_to_image
 from gpustack.utils.envs import filter_env_vars
 from gpustack.utils.hub import get_hf_text_config, get_max_model_len
-from gpustack.scheduler.calculator import get_pretrained_config_sync
+from gpustack.utils.hub import get_pretrained_config
 from gpustack.utils.profiling import time_decorator
 from gpustack.utils import platform
 from gpustack.utils.runtime import transform_workload_plan
@@ -223,7 +223,7 @@ class InferenceServer(ABC):
             return self._pretrained_config
 
         try:
-            pretrained_config = get_pretrained_config_sync(self._model)
+            pretrained_config = get_pretrained_config(self._model)
             self._pretrained_config = pretrained_config
             return pretrained_config
         except Exception as e:
@@ -821,13 +821,22 @@ $@
         arguments. This method splits them and returns a single flattened list.
         e.g.
             self._model.backend_parameters = ["--ctx-size 1024"] -> ["--ctx-size", "1024"]
+            self._model.backend_parameters = [" --ctx-size=1024"] -> ["--ctx-size=1024"]
+            self._model.backend_parameters = ["--ctx-size =1024"] -> ["--ctx-size=1024"]
         """
         result = []
         for param in self._model.backend_parameters or []:
-            if "=" in param:
-                result.append(param)
+            # Strip leading/trailing whitespace
+            param_stripped = param.strip()
+
+            if "=" in param_stripped:
+                # Handle cases like "--foo = bar" or "--foo  =bar"
+                # Split by = and strip whitespace around it
+                key, value = map(str.strip, param_stripped.split("=", 1))
+                result.append(f"{key}={value}")
                 continue
-            result.extend(shlex.split(param))
+
+            result.extend(shlex.split(param_stripped))
         return result
 
     def _transform_workload_plan(
