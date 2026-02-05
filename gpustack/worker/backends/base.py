@@ -418,17 +418,27 @@ class InferenceServer(ABC):
             and not runtime_envs.GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT
         ):
             try:
+                logger.info(
+                    f"Attempting to get dataset with id: {self._model.dataset_id}"
+                )
                 dataset = self._clientset.datasets.get(id=self._model.dataset_id)
+                logger.info(f"Successfully retrieved dataset: {dataset.name}")
                 if dataset.path:
-                    print("dataset.path", dataset.path)
+                    logger.info(f"Dataset path: {dataset.path}")
                     dataset_dir = os.path.dirname(dataset.path)
+                    logger.info(f"Dataset directory: {dataset_dir}")
                     mounts.append(
                         ContainerMount(
                             path=dataset_dir,
                         ),
                     )
+                else:
+                    logger.warning(f"Dataset {dataset.name} has no path specified")
             except Exception as e:
                 logger.warning(f"Failed to mount dataset: {e}")
+                import traceback
+
+                logger.warning(f"Exception stack trace:\n{traceback.format_exc()}")
 
         return mounts
 
