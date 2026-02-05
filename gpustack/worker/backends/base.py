@@ -401,6 +401,7 @@ class InferenceServer(ABC):
         Returns:
             A list of ContainerMount objects for the model instance.
         """
+        print("in mount", self._model_path)
         mounts: List[ContainerMount] = []
         if (
             self._model_path
@@ -412,7 +413,7 @@ class InferenceServer(ABC):
                     path=model_dir,
                 ),
             )
-
+        print("in mount dataset_id", self._model.dataset_id)
         # Mount dataset path if model has dataset_id
         if (
             self._model.dataset_id
