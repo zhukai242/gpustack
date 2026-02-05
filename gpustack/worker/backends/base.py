@@ -452,7 +452,7 @@ class InferenceServer(ABC):
                 mounts.append(
                     ContainerMount(
                         path=output_dir,
-                        mount_path="/output",
+                        volume='/output',
                     ),
                 )
             except Exception as e:
