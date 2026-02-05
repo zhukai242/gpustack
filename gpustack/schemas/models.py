@@ -269,7 +269,6 @@ class Model(ModelBase, BaseModelMixin, table=True):
     )
 
     cluster: "Cluster" = Relationship(
-        back_populates="cluster_models",
         sa_relationship_kwargs={"lazy": "noload"},
     )
 
@@ -339,10 +338,14 @@ class ModelInstanceStateEnum(str, Enum):
                      |            ^  |               |                |               |          ^
                      |            |  |               |                |               |          |(Worker ready)
                      |------------|--|---------------|----------------|---------------|----------|
-                     \____________|_____________________________________________________________/|
+                     \____________|_____________________________________________________________/
                                   |                  ERROR                                       |(Worker unreachable)
-                                  └--------------------┘                                         v
+                                  \--------------------┘                                         v
                                     (Restart on Error)                                       UNREACHABLE
+                                                                                                  |
+                                                                                                  |
+                                                                                                  v
+                                                                                              COMPLETED
     """
 
     INITIALIZING = "initializing"
@@ -354,6 +357,7 @@ class ModelInstanceStateEnum(str, Enum):
     DOWNLOADING = "downloading"
     ANALYZING = "analyzing"
     UNREACHABLE = "unreachable"
+    COMPLETED = "completed"
 
     def __str__(self):
         return self.value
@@ -570,6 +574,90 @@ class ModelInstance(ModelInstanceBase, BaseModelMixin, table=True):
 
     cluster: "Cluster" = Relationship(
         back_populates="cluster_model_instances",
+        sa_relationship_kwargs={"lazy": "noload"},
+    )
+
+    # overwrite the hash to use in uniquequeue
+    def __hash__(self):
+        return self.id
+
+
+# Train History Models
+
+
+class TrainHistory(ModelBase, BaseModelMixin, table=True):
+    __tablename__ = 'train_history'
+    id: Optional[int] = Field(default=None, primary_key=True)
+
+    instances: list["TrainInstancesHistory"] = Relationship(
+        sa_relationship_kwargs={"cascade": "delete", "lazy": "noload"},
+        back_populates="train_history",
+    )
+
+    creator: Optional["User"] = Relationship(
+        sa_relationship_kwargs={
+            "lazy": "noload",
+            "foreign_keys": "TrainHistory.created_by",
+        },
+    )
+
+    cluster: "Cluster" = Relationship(
+        sa_relationship_kwargs={"lazy": "noload"},
+    )
+
+
+class TrainInstancesHistory(SQLModel, BaseModelMixin, table=True):
+    __tablename__ = 'train_instances_history'
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str = Field(index=True, unique=True)
+    worker_id: Optional[int] = None
+    worker_name: Optional[str] = None
+    worker_advertise_address: Optional[str] = None
+    worker_ip: Optional[str] = None
+    worker_ifname: Optional[str] = None
+    pid: Optional[int] = None
+    port: Optional[int] = None
+    ports: Optional[List[int]] = Field(sa_type=JSON, default=[])
+    download_progress: Optional[float] = None
+    resolved_path: Optional[str] = None
+    draft_model_download_progress: Optional[float] = None
+    draft_model_resolved_path: Optional[str] = None
+    restart_count: Optional[int] = 0
+    last_restart_time: Optional[datetime] = Field(default=None)
+    state: ModelInstanceStateEnum = ModelInstanceStateEnum.PENDING
+    state_message: Optional[str] = Field(default=None)
+    computed_resource_claim: Optional[ComputedResourceClaim] = Field(
+        sa_column=Column(pydantic_column_type(ComputedResourceClaim)), default=None
+    )
+    gpu_type: Optional[str] = None
+    gpu_indexes: Optional[List[int]] = Field(sa_type=JSON, default=[])
+    gpu_addresses: Optional[List[str]] = Field(sa_type=JSON, default=[])
+    model_id: int = Field(default=None)
+    model_name: str
+    backend: Optional[str] = None
+    backend_version: Optional[str] = None
+    api_detected_backend_version: Optional[str] = None
+    distributed_servers: Optional[DistributedServers] = Field(
+        sa_column=Column(pydantic_column_type(DistributedServers)), default=None
+    )
+    cluster_id: Optional[int] = Field(default=None, foreign_key="clusters.id")
+    train_history_id: Optional[int] = Field(
+        default=None, foreign_key="train_history.id"
+    )
+    # ModelSource fields
+    source: SourceEnum
+    huggingface_repo_id: Optional[str] = None
+    huggingface_filename: Optional[str] = None
+    model_scope_model_id: Optional[str] = None
+    model_scope_file_path: Optional[str] = None
+    local_path: Optional[str] = None
+
+    train_history: Optional[TrainHistory] = Relationship(
+        back_populates="instances",
+        sa_relationship_kwargs={"lazy": "noload"},
+    )
+
+    cluster: "Cluster" = Relationship(
         sa_relationship_kwargs={"lazy": "noload"},
     )
 

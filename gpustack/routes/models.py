@@ -374,8 +374,12 @@ async def create_model(
 
     try:
         await revoke_model_access_cache(session=session)
+        # 训练任务（task_type=1）不需要创建 route
+        is_training_task = model_in.task_type == 1
         should_create_route = (
-            model_in.enable_model_route is not None and model_in.enable_model_route
+            not is_training_task
+            and model_in.enable_model_route is not None
+            and model_in.enable_model_route
         )
         model: Model = await Model.create(
             session, source=model_in_dict, auto_commit=(not should_create_route)

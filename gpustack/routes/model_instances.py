@@ -7,7 +7,7 @@ from sqlalchemy.orm import selectinload
 
 from gpustack.api.responses import StreamingResponseWithStatusCode
 from gpustack import envs
-from gpustack.server.services import ModelInstanceService
+from gpustack.server.services import ModelInstanceService, ModelService
 from gpustack.utils.network import use_proxy_env_for_url
 from gpustack.worker.logs import LogOptionsDep
 from gpustack.api.exceptions import (
@@ -18,12 +18,16 @@ from gpustack.schemas.workers import Worker
 from gpustack.schemas.clusters import Cluster
 from gpustack.server.deps import ListParamsDep, SessionDep
 from gpustack.schemas.models import (
+    Model,
     ModelInstance,
     ModelInstanceCreate,
     ModelInstancePublic,
     ModelInstanceUpdate,
     ModelInstancesPublic,
     ModelInstanceStateEnum,
+    ModelUpdate,
+    TrainHistory,
+    TrainInstancesHistory,
 )
 from gpustack.schemas.model_files import ModelFileStateEnum
 from gpustack.config.config import get_global_config
@@ -220,7 +224,65 @@ async def update_model_instance(
         raise NotFoundException(message="Model instance not found")
 
     try:
-        await ModelInstanceService(session).update(model_instance, model_instance_in)
+        # 如果是针对complete，那说明是训练任务结束了，执行对应的停止删除操作
+        if model_instance_in.state == ModelInstanceStateEnum.COMPLETED:
+            # 训练任务完成，需要停止并删除模型实例
+            # 直接执行models的对应的接口即可，同时将训练的历史任务记录
+            # 先根据model_instance的model_id查询model
+            model = await Model.one_by_id(session, model_instance.model_id)
+            if not model:
+                raise NotFoundException(message="Model not found")
+
+            # 创建训练历史记录
+            # 复制model的所有字段到TrainHistory
+            model_dict = model.model_dump()
+            # 移除id字段，让数据库自动生成
+            model_dict.pop('id', None)
+            # 创建TrainHistory记录
+            train_history = TrainHistory(**model_dict)
+            train_history = await TrainHistory.create(
+                session, source=train_history, auto_commit=False
+            )
+
+            # 复制model_instance的所有字段到TrainInstancesHistory
+            model_instance_dict = model_instance.model_dump()
+            # 移除id字段，让数据库自动生成
+            model_instance_dict.pop('id', None)
+            # 设置train_history_id关联
+            model_instance_dict['train_history_id'] = train_history.id
+            # 创建TrainInstancesHistory记录
+            train_instance_history = TrainInstancesHistory(**model_instance_dict)
+            await TrainInstancesHistory.create(
+                session, source=train_instance_history, auto_commit=True
+            )
+
+            # 将模型的replicas设置为0
+            # 从现有的model对象创建ModelUpdate对象，包含所有必需的字段
+            model_in = ModelUpdate(**model.model_dump())
+            # 只修改replicas字段
+            model_in.replicas = 0
+            await ModelService(session).update(model, model_in)
+            # 再删除模型实例
+            model = await Model.one_by_id(
+                session,
+                model_instance.model_id,
+                options=[
+                    selectinload(Model.instances),
+                    selectinload(Model.model_route_targets),
+                ],
+            )
+            if not model:
+                raise NotFoundException(message="Model not found")
+            try:
+                await ModelService(session).delete(model)
+            except Exception as e:
+                raise InternalServerErrorException(
+                    message=f"Failed to delete model: {e}"
+                )
+        else:
+            await ModelInstanceService(session).update(
+                model_instance, model_instance_in
+            )
     except Exception as e:
         raise InternalServerErrorException(
             message=f"Failed to update model instance: {e}"

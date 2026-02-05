@@ -799,6 +799,21 @@ class ServeManager:
             logger.debug(f"Model instance {mi.name} is provisioning. Skipping restart.")
             return
 
+        # Check if this is a training model with dataset
+        model = self._get_model(mi)
+        if model.task_type == 1 and model.dataset_id:
+            # This is a training task with dataset, no need to restart
+            logger.info(f"Training task {mi.name} has completed. Notifying server.")
+            with contextlib.suppress(NotFoundException):
+                self._update_model_instance(
+                    mi.id,
+                    state=ModelInstanceStateEnum.COMPLETED,
+                    state_message="Training task completed successfully.",
+                )
+            # Remove from error model instances
+            self._error_model_instances.pop(mi.id, None)
+            return
+
         restart_count = mi.restart_count or 0
         last_restart_time = mi.last_restart_time or mi.updated_at
 
