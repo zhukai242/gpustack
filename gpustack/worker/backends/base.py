@@ -412,6 +412,24 @@ class InferenceServer(ABC):
                     path=model_dir,
                 ),
             )
+
+        # Mount dataset path if model has dataset_id
+        if (
+            self._model.dataset_id
+            and not runtime_envs.GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT
+        ):
+            try:
+                dataset = self._clientset.datasets.get(id=self._model.dataset_id)
+                if dataset.path:
+                    dataset_dir = os.path.dirname(dataset.path)
+                    mounts.append(
+                        ContainerMount(
+                            path=dataset_dir,
+                        ),
+                    )
+            except Exception as e:
+                logger.warning(f"Failed to mount dataset: {e}")
+
         return mounts
 
     def _get_configured_ports(self) -> List[ContainerPort]:
