@@ -106,6 +106,15 @@ class CustomServer(InferenceServer):
                     value=value,
                 )
                 for name, value in env.items()
+            ]
+            + [
+                # Add output directory environment variable
+                ContainerEnv(
+                    name="output",
+                    value=os.path.join(
+                        self._config.storage_dir, self._model_instance.name, 'output'
+                    ),
+                ),
             ],
             mounts=mounts,
             resources=resources,
