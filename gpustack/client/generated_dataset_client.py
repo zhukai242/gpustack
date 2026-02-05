@@ -65,7 +65,7 @@ class DatasetClient:
             )
             return DatasetsPublic(items=items, pagination=pagination)
 
-        response = self._client.get(self._url, params=params)
+        response = self._client.get_httpx_client().get(self._url, params=params)
         raise_if_response_error(response)
 
         data = response.json()
@@ -95,7 +95,7 @@ class DatasetClient:
                 if id in self._cache:
                     return self._cache[id]
 
-        response = self._client.get(f"{self._url}/{id}")
+        response = self._client.get_httpx_client().get(f"{self._url}/{id}")
         raise_if_response_error(response)
 
         data = response.json()
@@ -225,7 +225,9 @@ class DatasetClient:
             )
             return DatasetsPublic(items=items, pagination=pagination)
 
-        response = await self._client.aget(self._url, params=params)
+        response = await self._client.get_async_httpx_client().get(
+            self._url, params=params
+        )
         await async_raise_if_response_error(response)
 
         data = response.json()
@@ -255,7 +257,7 @@ class DatasetClient:
                 if id in self._cache:
                     return self._cache[id]
 
-        response = await self._client.aget(f"{self._url}/{id}")
+        response = await self._client.get_async_httpx_client().get(f"{self._url}/{id}")
         await async_raise_if_response_error(response)
 
         data = response.json()
@@ -281,7 +283,7 @@ class EventSource:
     def __iter__(self):
         while True:
             try:
-                response = self._client.get(
+                response = self._client.get_httpx_client().get(
                     f"{self._url}/watch",
                     params=self._params,
                     stream=True,
@@ -315,10 +317,10 @@ class AsyncEventSource:
     async def __aiter__(self):
         while True:
             try:
-                async with self._client.aget(
+                async with self._client.get_async_httpx_client().stream(
+                    "GET",
                     f"{self._url}/watch",
                     params=self._params,
-                    stream=True,
                     timeout=None,
                 ) as response:
                     async for line in response.aiter_lines():
