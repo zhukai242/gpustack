@@ -3,6 +3,7 @@ from urllib.parse import urlparse
 from .generated_http_client import HTTPClient
 from typing import Optional
 
+from gpustack.client import ClientSet
 from .generated_worker_client import WorkerClient
 from .generated_model_client import ModelClient
 from .generated_model_instance_client import ModelInstanceClient
@@ -11,6 +12,7 @@ from .generated_user_client import UserClient
 from .generated_inference_backend_client import InferenceBackendClient
 from .generated_benchmark_client import BenchmarkClient
 from .generated_model_route_target_client import ModelRouteTargetClient
+from .generated_dataset_client import DatasetClient
 
 from gpustack.utils.network import use_proxy_env_for_url
 
@@ -86,6 +88,10 @@ class ClientSet:
             enable_cache=enable_cache,
         )
         self.model_route_targets = ModelRouteTargetClient(
+            http_client,
+            enable_cache=enable_cache,
+        )
+        self.datasets = DatasetClient(
             http_client,
             enable_cache=enable_cache,
         )
