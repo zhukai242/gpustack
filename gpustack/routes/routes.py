@@ -128,6 +128,8 @@ model_routers = [
         "prefix": "/model-route-targets",
         "tags": ["Model Route Targets"],
     },
+    {"router": tasks.router, "prefix": "/tasks", "tags": ["Tasks"]},
+    {"router": datasets.router, "prefix": "/datasets", "tags": ["Datasets"]},
 ]
 # worker client have full access to model and model instances
 worker_client_router = APIRouter()
@@ -221,8 +223,6 @@ admin_routers = model_routers + [
         "prefix": "/reports",
         "tags": ["Reports"],
     },
-    {"router": tasks.router, "prefix": "/tasks", "tags": ["Tasks"]},
-    {"router": datasets.router, "prefix": "/datasets", "tags": ["Datasets"]},
     {
         "router": model_provider.router,
         "prefix": "/model-providers",

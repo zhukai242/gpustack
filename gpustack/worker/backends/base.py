@@ -424,18 +424,39 @@ class InferenceServer(ABC):
                 dataset = self._clientset.datasets.get(id=self._model.dataset_id)
                 logger.info(f"Successfully retrieved dataset: {dataset.name}")
                 if dataset.path:
-                    logger.info(f"Dataset path: {dataset.path}")
                     dataset_dir = os.path.dirname(dataset.path)
-                    logger.info(f"Dataset directory: {dataset_dir}")
                     mounts.append(
                         ContainerMount(
                             path=dataset_dir,
                         ),
                     )
-                else:
-                    logger.warning(f"Dataset {dataset.name} has no path specified")
             except Exception as e:
                 logger.warning(f"Failed to mount dataset: {e}")
+                import traceback
+
+                logger.warning(f"Exception stack trace:\n{traceback.format_exc()}")
+
+        # Mount output directory for container logs and intermediate files
+        if not runtime_envs.GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT:
+            try:
+                # Get storage directory from config
+                storage_dir = self._config.storage_dir
+                # Create output directory path
+                output_dir = os.path.join(
+                    storage_dir, self._model_instance.name, 'output'
+                )
+                # Create directory if it doesn't exist
+                os.makedirs(output_dir, exist_ok=True)
+                logger.info(f"Mounting container output directory to: {output_dir}")
+                # Add mount for container /output directory
+                mounts.append(
+                    ContainerMount(
+                        path=output_dir,
+                        mount_path="/output",
+                    ),
+                )
+            except Exception as e:
+                logger.warning(f"Failed to mount output directory: {e}")
                 import traceback
 
                 logger.warning(f"Exception stack trace:\n{traceback.format_exc()}")

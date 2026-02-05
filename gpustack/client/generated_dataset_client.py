@@ -96,9 +96,7 @@ class DatasetClient:
                     return self._cache[id]
 
         url = f"{self._url}/{id}"
-        logger.info(f"Requesting dataset with URL: {url}")
         response = self._client.get_httpx_client().get(url)
-        logger.info(f"Received response with status code: {response.status_code}")
         raise_if_response_error(response)
 
         data = response.json()
