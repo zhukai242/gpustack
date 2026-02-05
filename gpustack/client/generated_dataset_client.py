@@ -12,6 +12,7 @@ from gpustack.api.exceptions import (
 from gpustack.server.bus import Event, EventType
 from gpustack.schemas import *
 from gpustack.schemas.common import Pagination
+from gpustack.schemas.datasets import DatasetPublic, DatasetsPublic
 
 from .generated_http_client import HTTPClient
 

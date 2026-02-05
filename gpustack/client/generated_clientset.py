@@ -3,7 +3,6 @@ from urllib.parse import urlparse
 from .generated_http_client import HTTPClient
 from typing import Optional
 
-from gpustack.client import ClientSet
 from .generated_worker_client import WorkerClient
 from .generated_model_client import ModelClient
 from .generated_model_instance_client import ModelInstanceClient
