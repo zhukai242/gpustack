@@ -62,7 +62,6 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(['dataset_id'], ['datasets.id'], ),
         sa.PrimaryKeyConstraint('id')
     )
-    op.create_index(op.f('ix_train_history_name'), 'train_history', ['name'], unique=True)
     
     # Create train_instances_history table
     op.create_table('train_instances_history',
@@ -110,14 +109,11 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(['train_history_id'], ['train_history.id'], ),
         sa.PrimaryKeyConstraint('id')
     )
-    op.create_index(op.f('ix_train_instances_history_name'), 'train_instances_history', ['name'], unique=True)
 
 
 def downgrade() -> None:
     # Drop train_instances_history table
-    op.drop_index(op.f('ix_train_instances_history_name'), table_name='train_instances_history')
     op.drop_table('train_instances_history')
     
     # Drop train_history table
-    op.drop_index(op.f('ix_train_history_name'), table_name='train_history')
     op.drop_table('train_history')
