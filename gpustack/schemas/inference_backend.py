@@ -185,6 +185,8 @@ class InferenceBackendBase(SQLModel):
         port: Optional[int],
         worker_ip: Optional[str] = None,
         model_name: Optional[str] = None,
+        dataset_path: Optional[str] = None,
+        output_path: Optional[str] = None,
         command: Optional[str] = None,
         env: Optional[Dict[str, str]] = None,
     ) -> str:
@@ -197,6 +199,8 @@ class InferenceBackendBase(SQLModel):
         command = command.replace("{{port}}", str(port))
         command = command.replace("{{worker_ip}}", worker_ip or "")
         command = command.replace("{{model_name}}", model_name or "")
+        command = command.replace("{{dataset_path}}", dataset_path or "")
+        command = command.replace("{{output_path}}", output_path or "")
 
         # Resolve environment variables using {{VAR_NAME}} syntax
         # Use provided env (from model) if available, otherwise fall back to backend env

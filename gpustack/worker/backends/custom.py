@@ -165,12 +165,32 @@ class CustomServer(InferenceServer):
     def _build_command_args(self) -> List[str]:
         command_args = []
 
+        # Get dataset path if model has dataset_id
+        dataset_path = None
+        if (
+            self._model.dataset_id
+            and hasattr(self, '_clientset')
+            and hasattr(self._clientset, 'datasets')
+        ):
+            try:
+                dataset = self._clientset.datasets.get(id=self._model.dataset_id)
+                dataset_path = dataset.path
+            except Exception as e:
+                logger.warning(f"Failed to get dataset path: {e}")
+
+        # Get output path
+        output_path = os.path.join(
+            self._config.storage_dir, self._model_instance.name, 'output'
+        )
+
         command_args_inline = self.inference_backend.replace_command_param(
             version=self._model.backend_version,
             model_path=self._model_path,
             port=self._get_serving_port(),
             worker_ip=self._worker.ip,
             model_name=self._model.name,
+            dataset_path=dataset_path,
+            output_path=output_path,
             command=self._model.run_command,
             env=self._model.env,
         )
