@@ -422,12 +422,10 @@ class InferenceServer(ABC):
                     f"Attempting to get dataset with id: {self._model.dataset_id}"
                 )
                 dataset = self._clientset.datasets.get(id=self._model.dataset_id)
-                logger.info(f"Successfully retrieved dataset: {dataset.name}")
                 if dataset.path:
-                    dataset_dir = os.path.dirname(dataset.path)
                     mounts.append(
                         ContainerMount(
-                            path=dataset_dir,
+                            path=dataset.path,
                         ),
                     )
             except Exception as e:

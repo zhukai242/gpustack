@@ -115,6 +115,23 @@ class CustomServer(InferenceServer):
                         self._config.storage_dir, self._model_instance.name, 'output'
                     ),
                 ),
+                # Add dataset path environment variable if model has dataset_id
+                *(
+                    [
+                        ContainerEnv(
+                            name="dataset_path",
+                            value=self._clientset.datasets.get(
+                                id=self._model.dataset_id
+                            ).path,
+                        )
+                    ]
+                    if (
+                        self._model.dataset_id
+                        and hasattr(self, '_clientset')
+                        and hasattr(self._clientset, 'datasets')
+                    )
+                    else []
+                ),
             ],
             mounts=mounts,
             resources=resources,

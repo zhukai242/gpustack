@@ -10,6 +10,8 @@ from gpustack.schemas.models import (
     Model,
     ModelInstance,
     ModelInstanceStateEnum,
+    TrainHistory,
+    TrainInstancesHistory,
 )
 from gpustack.schemas.users import User
 from gpustack.server.load_services import GPULoadService
@@ -25,6 +27,7 @@ class TaskStatsResponse(BaseModel):
     pending: int
     error: int
     other: int
+    completed: int = 0
 
 
 class TaskInfoResponse(BaseModel):
@@ -126,8 +129,21 @@ async def get_task_stats(
     # 计算其他状态的任务数
     other = total - running - pending - error
 
+    # 查询已完成的历史训练任务数量
+    completed_result = await session.exec(
+        select(func.count(TrainHistory.id)).where(
+            TrainHistory.created_by == current_user.id, TrainHistory.task_type == 1
+        )
+    )
+    completed = completed_result.one() or 0
+
     return TaskStatsResponse(
-        total=total, running=running, pending=pending, error=error, other=other
+        total=total,
+        running=running,
+        pending=pending,
+        error=error,
+        other=other,
+        completed=completed,
     )
 
 
@@ -186,8 +202,21 @@ async def get_train_task_stats(
     # 计算其他状态的任务数
     other = total - running - pending - error
 
+    # 查询已完成的历史训练任务数量
+    completed_result = await session.exec(
+        select(func.count(TrainHistory.id)).where(
+            TrainHistory.created_by == current_user.id, TrainHistory.task_type == 1
+        )
+    )
+    completed = completed_result.one() or 0
+
     return TaskStatsResponse(
-        total=total, running=running, pending=pending, error=error, other=other
+        total=total,
+        running=running,
+        pending=pending,
+        error=error,
+        other=other,
+        completed=completed,
     )
 
 
@@ -417,34 +446,84 @@ async def get_train_task_list(
     # 查询当前用户创建的所有训练模型ID
     model_ids = await _get_train_model_ids(session, current_user)
 
-    if not model_ids:
-        return TaskListResponse(items=[], total=0)
+    # 查询当前活跃的训练任务实例
+    current_instances = []
+    if model_ids:
+        statement = select(ModelInstance).where(ModelInstance.model_id.in_(model_ids))
+        instances_result = await session.exec(statement)
+        current_instances = instances_result.all()
 
-    # 查询所有模型实例
+    # 查询历史训练任务实例
+    history_instances = []
     statement = (
-        select(ModelInstance)
-        .where(ModelInstance.model_id.in_(model_ids))
-        .offset((page - 1) * per_page)
-        .limit(per_page)
+        select(TrainInstancesHistory)
+        .join(TrainHistory, TrainInstancesHistory.train_history_id == TrainHistory.id)
+        .where(TrainHistory.created_by == current_user.id, TrainHistory.task_type == 1)
     )
-    instances_result = await session.exec(statement)
-    instances = instances_result.all()
+    history_result = await session.exec(statement)
+    history_instances = history_result.all()
 
-    # 查询总数
-    total_result = await session.exec(
-        select(func.count(ModelInstance.id)).where(
-            ModelInstance.model_id.in_(model_ids)
-        )
-    )
-    total = total_result.one() or 0
+    # 合并两个列表
+    all_instances = []
+
+    # 添加当前实例
+    for instance in current_instances:
+        all_instances.append((instance, False))  # 标记为非历史任务
+
+    # 添加历史实例
+    for instance in history_instances:
+        all_instances.append((instance, True))  # 标记为历史任务
+
+    # 按照创建时间排序
+    all_instances.sort(key=lambda x: x[0].created_at, reverse=True)
+
+    # 计算总数
+    total = len(all_instances)
+
+    # 分页处理
+    start = (page - 1) * per_page
+    end = start + per_page
+    paginated_instances = all_instances[start:end]
 
     # 获取排队中的任务，用于计算队列位置
     pending_instance_ids = await _get_pending_instance_ids(session, model_ids)
 
     # 构建响应
     items = []
-    for instance in instances:
-        task_info = await _build_task_info(session, instance, pending_instance_ids)
+    for instance, is_history in paginated_instances:
+        if is_history:
+            # 历史任务，只构建基本信息
+            # 获取创建者信息
+            creator = None
+            if hasattr(instance, 'train_history_id'):
+                train_history = await session.get(
+                    TrainHistory, instance.train_history_id
+                )
+                if train_history and train_history.created_by:
+                    creator_result = await session.exec(
+                        select(User).where(User.id == train_history.created_by)
+                    )
+                    creator = creator_result.one_or_none()
+
+            # 构建基本任务信息
+            task_info = TaskInfoResponse(
+                id=instance.id,
+                name=instance.name,
+                model_name=instance.model_name,
+                group=creator.username if creator else "",
+                type="training",
+                status=ModelInstanceStateEnum.COMPLETED,
+                queue_position=None,
+                queue_time=None,
+                uptime=None,
+                username=creator.username if creator else None,
+                actual_gpu_utilization=None,
+                actual_vram_utilization=None,
+                estimated_vram_usage=None,
+            )
+        else:
+            # 当前任务，使用完整构建
+            task_info = await _build_task_info(session, instance, pending_instance_ids)
         items.append(task_info)
 
     return TaskListResponse(items=items, total=total)
