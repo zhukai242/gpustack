@@ -191,7 +191,12 @@ class UserPublic(UserBase):
     updated_at: datetime
 
 
+class UserPublicWithGroups(UserPublic):
+    user_groups: List[dict] = []
+
+
 UsersPublic = PaginatedList[UserPublic]
+UsersPublicWithGroups = PaginatedList[UserPublicWithGroups]
 
 
 def is_default_cluster_user(cluster_user: User) -> bool:

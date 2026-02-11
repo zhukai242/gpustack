@@ -549,9 +549,7 @@ async def remove_group_member(group_id: int, user_id: int, session: SessionDep):
         raise NotFoundException("Member not found in group")
 
     # Remove member
-    from gpustack.mixins import soft_delete
-
-    await soft_delete(session, member)
+    await session.delete(member)
     await session.commit()
 
     return {"message": "Member removed successfully"}
