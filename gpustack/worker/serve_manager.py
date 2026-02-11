@@ -329,13 +329,14 @@ class ServeManager:
                             "state_message": "",
                         }
 
-                        # Fetch model meta once running.
-                        meta = get_meta_from_running_instance(
-                            model_instance, backend, model
-                        )
-                        if meta and meta != model.meta:
-                            model_patch_dict = {"meta": meta}
-                            self._update_model(model.id, **model_patch_dict)
+                        if not model.meta:
+                            # Fetch model meta once running.
+                            meta = get_meta_from_running_instance(
+                                model_instance, backend, model
+                            )
+                            if meta:
+                                model_patch_dict = {"meta": meta}
+                                self._update_model(model.id, **model_patch_dict)
                     # Otherwise, update the main worker state to ERROR.
                     else:
                         patch_dict = {
@@ -556,7 +557,7 @@ class ServeManager:
             mi: The model instance to start.
 
         """
-        if mi.id in self._provisioning_processes:
+        if self._is_provisioning(mi):
             logger.warning(f"Model instance {mi.name} is provisioning. Skipping start.")
             return
 

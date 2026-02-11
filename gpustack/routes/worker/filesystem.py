@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import os
 import subprocess
@@ -18,6 +19,7 @@ from gpustack.scheduler.calculator import (
     _gguf_parser_command,
     _gguf_parser_env,
     GPUOffloadEnum,
+    calculate_local_model_weight_size,
 )
 
 
@@ -181,18 +183,34 @@ async def file_exists(path: str = Query(..., description="Path to check")):
         raise HTTPException(status_code=500, detail=f"Failed to check path: {str(e)}")
 
 
+def is_diffusion_model(path: str) -> bool:
+    """
+    Check if a path is a diffusion model by looking for model_index.json file.
+
+    Args:
+        path: Directory path to check
+
+    Returns:
+        True if model_index.json exists in the directory, False otherwise
+    """
+    model_index_path = os.path.join(path, "model_index.json")
+    try:
+        return os.path.isfile(model_index_path)
+    except OSError:
+        return False
+
+
 @router.get("/files/model-weight-size")
 async def get_model_weight_size(
-    path: str = Query(..., description="Directory path to scan")
+    path: str = Query(..., description="Directory path to scan"),
 ):
     """
     Calculate the total size of model weight files in a directory.
 
     Security:
     - Uses os.path.realpath to resolve symlinks and prevent directory traversal
-    - Only scans the specified directory (not recursive)
+    - Only scans the specified directory (not recursive for LLM, component dirs for diffusion)
     """
-    weight_file_extensions = (".safetensors", ".bin", ".pt", ".pth")
     try:
         # Validate path security (resolves symlinks, prevents directory traversal)
         validated_path = validate_path_security(path)
@@ -205,11 +223,22 @@ async def get_model_weight_size(
                 status_code=400, detail=f"Path is not a directory: {path}"
             )
 
-        total_size = 0
-        with os.scandir(validated_path) as it:
-            for entry in it:
-                if entry.is_file() and entry.name.endswith(weight_file_extensions):
-                    total_size += entry.stat().st_size
+        is_diffusion = is_diffusion_model(validated_path)
+
+        # Calculate size using utility function
+        try:
+            total_size = calculate_local_model_weight_size(validated_path, is_diffusion)
+        except FileNotFoundError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+        except NotADirectoryError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except PermissionError as e:
+            raise HTTPException(status_code=403, detail=str(e))
+        except json.JSONDecodeError as e:
+            raise HTTPException(
+                status_code=400, detail=f"Invalid model_index.json: {str(e)}"
+            )
+
         return {"size": total_size}
     except HTTPException:
         raise

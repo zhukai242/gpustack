@@ -132,11 +132,16 @@ class ModelSource(BaseModel):
         if self.source == SourceEnum.HUGGING_FACE:
             values.extend([self.huggingface_repo_id, self.huggingface_filename])
         elif self.source == SourceEnum.MODEL_SCOPE:
-            values.extend([self.model_scope_model_id, self.model_scope_file_path])
+            values.extend(
+                [self.source, self.model_scope_model_id, self.model_scope_file_path]
+            )
         elif self.source == SourceEnum.LOCAL_PATH:
             values.extend([self.local_path])
 
-        return hashlib.sha256(self.readable_source.encode()).hexdigest()
+        # Filter out None values and join
+        filtered_values = [v for v in values if v is not None]
+        source_string = "/".join(filtered_values)
+        return hashlib.sha256(source_string.encode()).hexdigest()
 
     @model_validator(mode="after")
     def check_huggingface_fields(self):
@@ -751,7 +756,6 @@ def is_omni_model(model: Model) -> bool:
     OMNI_CATEGORIES = (
         CategoryEnum.IMAGE,
         CategoryEnum.TEXT_TO_SPEECH,
-        CategoryEnum.SPEECH_TO_TEXT,
     )
     return any(cat in model.categories for cat in OMNI_CATEGORIES)
 

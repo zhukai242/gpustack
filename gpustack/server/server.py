@@ -20,6 +20,7 @@ from gpustack.schemas.users import (
     get_default_cluster_user,
     default_cluster_user_name,
 )
+from gpustack.schemas.models import ModelInstance
 from gpustack.schemas.api_keys import ApiKey
 from gpustack.schemas.workers import Worker
 from gpustack.schemas.clusters import Cluster, ClusterProvider, ClusterStateEnum
@@ -71,6 +72,7 @@ from gpustack.gateway.utils import (
     cleanup_selected_wasm_plugins,
     cleanup_fallback_filters,
     cleanup_ai_proxy_config,
+    cleanup_mcpbridge_registry,
 )
 from gpustack.gateway import get_async_k8s_config
 from gpustack.envs import (
@@ -307,7 +309,10 @@ class Server:
         logger.debug("Worker instance cleaner started.")
 
     def _start_gateway_metrics_collector(self):
-        if self._config.gateway_mode != GatewayModeEnum.embedded:
+        if self._config.gateway_mode not in [
+            GatewayModeEnum.embedded,
+            GatewayModeEnum.external,
+        ]:
             return
         collector = GatewayMetricsCollector(cfg=self._config)
 
@@ -644,6 +649,14 @@ class Server:
             session=session,
             fields={"deleted_at": None},
         )
+        model_instances = await ModelInstance.all_by_fields(
+            session=session,
+            fields={"deleted_at": None},
+        )
+        workers = await Worker.all_by_fields(
+            session=session,
+            fields={"deleted_at": None},
+        )
         fallback_route_ids = [
             ep.route_id
             for ep in route_targets
@@ -691,6 +704,13 @@ class Server:
             namespace=self.config.gateway_namespace,
             providers=providers,
             routes=model_routes,
+            k8s_config=k8s_config,
+        )
+        await cleanup_mcpbridge_registry(
+            providers=providers,
+            namespace=self.config.gateway_namespace,
+            model_instances=model_instances,
+            workers=workers,
             k8s_config=k8s_config,
         )
 

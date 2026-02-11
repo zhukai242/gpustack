@@ -4,7 +4,7 @@ from typing import Optional, Sequence
 import aiohttp
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import PlainTextResponse, StreamingResponse
-
+from sqlmodel import func
 from gpustack import envs
 from gpustack.api.exceptions import (
     AlreadyExistsException,
@@ -81,6 +81,16 @@ async def get_benchmarks(
     )
 
 
+def gpu_summary_filter(data: Benchmark, gpu_summary: Optional[str]) -> bool:
+    if (
+        gpu_summary
+        and data.gpu_summary
+        and gpu_summary.lower() not in data.gpu_summary.lower()
+    ):
+        return False
+    return True
+
+
 async def _get_benchmarks(
     session: SessionDep,
     params: BenchmarkListParams,
@@ -94,24 +104,28 @@ async def _get_benchmarks(
     if search:
         fuzzy_fields["name"] = search
 
-    if model_name:
-        fuzzy_fields["model_name"] = model_name
-
-    if gpu_summary:
-        fuzzy_fields["gpu_summary"] = gpu_summary
-
-    if dataset_name:
-        fuzzy_fields["dataset_name"] = dataset_name
-
     fields = {}
     if state:
         fields["state"] = state
+
+    if model_name:
+        fields["model_name"] = model_name
+
+    if dataset_name:
+        fields["dataset_name"] = dataset_name
+
+    extra_conditions = []
+    if gpu_summary:
+        extra_conditions.append(
+            func.lower(Benchmark.gpu_summary).like(f"%{gpu_summary}%")
+        )
 
     if params.watch:
         return StreamingResponse(
             Benchmark.streaming(
                 fields=fields,
                 fuzzy_fields=fuzzy_fields,
+                filter_func=lambda data: gpu_summary_filter(data, gpu_summary),
             ),
             media_type="text/event-stream",
         )
@@ -139,6 +153,7 @@ async def _get_benchmarks(
         page=params.page,
         per_page=params.perPage,
         order_by=order_by,
+        extra_conditions=extra_conditions,
         options=[defer(Benchmark.raw_metrics)],
     )
 
@@ -213,7 +228,7 @@ async def validate_and_mutate_benchmark_in(
         mutated.request_rate = (
             benchmark_in.total_requests
             if benchmark_in.total_requests is not None
-            else 10000
+            else 1000
         )  # treat non-positive request_rate as unlimited
 
     snapshot = await get_benchmark_snapshot(session, instance, model)
@@ -447,6 +462,7 @@ async def export_benchmarks(
         "progress",
         "state_message",
         "state",
+        "deleted_at",
     ]
     extra_conditions = [
         col(Benchmark.id).in_(ids),

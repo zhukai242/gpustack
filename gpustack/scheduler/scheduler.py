@@ -32,8 +32,10 @@ from gpustack.policies.worker_filters.backend_framework_filter import (
 )
 from gpustack.policies.worker_filters.label_matching_filter import LabelMatchingFilter
 from gpustack.policies.worker_filters.gpu_matching_filter import GPUMatchingFilter
+from gpustack.policies.worker_filters.local_path_filter import LocalPathFilter
 from gpustack.policies.worker_filters.cluster_filter import ClusterFilter
 from gpustack.scheduler.model_registry import detect_model_type
+from gpustack.scheduler.meta_registry import get_model_meta
 from gpustack.scheduler.queue import AsyncUniqueQueue
 from gpustack.policies.worker_filters.status_filter import StatusFilter
 from gpustack.schemas.inference_backend import is_built_in_backend
@@ -56,7 +58,7 @@ from gpustack.server.bus import EventType
 from gpustack.server.db import async_session
 from gpustack.scheduler.calculator import (
     GPUOffloadEnum,
-    calculate_model_resource_claim,
+    calculate_gguf_model_resource_claim,
     check_diffusers_model_index_from_workers,
 )
 from gpustack.server.services import (
@@ -397,6 +399,7 @@ async def find_candidate(
         LabelMatchingFilter(model),
         StatusFilter(model),
         BackendFrameworkFilter(model),
+        LocalPathFilter(model),
     ]
 
     worker_filter_chain = WorkerFilterChain(filters)
@@ -483,10 +486,8 @@ async def evaluate_gguf_model(
     workers: Optional[List[Worker]] = None,
 ) -> bool:
 
-    task_output = await calculate_model_resource_claim(
-        model,
-        offload=GPUOffloadEnum.Full,
-        workers=workers,
+    task_output = await calculate_gguf_model_resource_claim(
+        model, offload=GPUOffloadEnum.Full, workers=workers
     )
     if (
         task_output.resource_architecture
@@ -671,7 +672,7 @@ async def evaluate_pretrained_config(
     raise_raw: bool = False,
 ) -> bool:
     """
-    evaluate the model's pretrained config to determine its type.
+    evaluate the model's pretrained config to determine its categories, meta and gpus_per_replica.
     Args:
         model: Model to evaluate.
         workers: Optional list of workers (for LOCAL_PATH).
@@ -736,9 +737,14 @@ async def evaluate_pretrained_config(
             f"Unsupported architecture: {architectures}. To proceed with deployment, ensure the model is supported by backend, or deploy it using a custom backend version or custom backend."
         )
 
+    meta_modified = False
+    if not model.meta and (known_meta := get_model_meta(pretrained_config)):
+        model.meta = known_meta
+        meta_modified = True
+
     categories_modified = set_model_categories(model, model_type)
     gpus_per_replica_modified = set_model_gpus_per_replica(model)
-    return categories_modified or gpus_per_replica_modified
+    return categories_modified or gpus_per_replica_modified or meta_modified
 
 
 def _extract_trust_remote_code(model: Model) -> bool:
@@ -815,21 +821,13 @@ def set_model_categories(model: Model, model_type: CategoryEnum) -> bool:
     if model.categories:
         return False
 
-    if model_type == CategoryEnum.EMBEDDING:
-        model.categories = [CategoryEnum.EMBEDDING]
-        return True
-    elif model_type == CategoryEnum.RERANKER:
-        model.categories = [CategoryEnum.RERANKER]
-        return True
-    elif model_type == CategoryEnum.LLM:
-        model.categories = [CategoryEnum.LLM]
-        return True
-    elif model_type == CategoryEnum.UNKNOWN:
+    if model_type == CategoryEnum.UNKNOWN:
         # Default to LLM for unknown architectures
         model.categories = [CategoryEnum.LLM]
-        return True
+    else:
+        model.categories = [model_type]
 
-    return False
+    return True
 
 
 def set_model_gpus_per_replica(model: Model) -> bool:

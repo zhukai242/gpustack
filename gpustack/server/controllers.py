@@ -43,7 +43,6 @@ from gpustack.schemas.models import (
 )
 from gpustack.schemas.config import (
     GatewayModeEnum,
-    ModelInstanceProxyModeEnum,
     SensitivePredefinedConfig,
 )
 from gpustack.schemas.workers import (
@@ -112,6 +111,8 @@ logger = logging.getLogger(__name__)
 class ModelController:
     def __init__(self, cfg: Config):
         self._config = cfg
+        self._k8s_config = get_async_k8s_config(cfg=cfg)
+        self._disable_gateway = cfg.gateway_mode == GatewayModeEnum.disabled
 
         pass
 
@@ -119,12 +120,47 @@ class ModelController:
         """
         Start the controller.
         """
+        if not self._disable_gateway:
+            base_client = k8s_client.ApiClient(configuration=self._k8s_config)
+            self._higress_network_api = NetworkingHigressIoV1Api(base_client)
 
         async for event in Model.subscribe(source="model_controller"):
             if event.type == EventType.HEARTBEAT:
                 continue
 
             await self._reconcile(event)
+
+    async def _ensure_model_mcp_bridge(
+        self, session: AsyncSession, event_type: EventType, model: Model
+    ):
+        if self._disable_gateway:
+            return
+        model_instances = await ModelInstance.all_by_fields(
+            session,
+            fields={"model_id": model.id, "deleted_at": None},
+        )
+        worker_by_id = None
+        worker_ids = {
+            instance.worker_id for instance in model_instances if instance.worker_id
+        }
+        if worker_ids:
+            workers = await Worker.all_by_fields(
+                session,
+                extra_conditions=[
+                    Worker.id.in_(worker_ids),
+                ],
+            )
+            worker_by_id = {worker.id: worker for worker in workers}
+
+        await mcp_handler.ensure_model_mcp_bridge(
+            event_type=event_type,
+            model_id=model.id,
+            model_instances=model_instances,
+            networking_higress_api=self._higress_network_api,
+            namespace=self._config.gateway_namespace,
+            cluster_id=model.cluster_id,
+            workers=worker_by_id,
+        )
 
     async def _reconcile(self, event: Event):
         """
@@ -139,6 +175,7 @@ class ModelController:
                     session=session, model=model, event=event
                 )
                 await sync_categories_and_meta(session, model, event)
+                await self._ensure_model_mcp_bridge(session, event.type, model)
         except Exception as e:
             logger.error(f"Failed to reconcile model {model.name}: {e}")
 
@@ -146,8 +183,6 @@ class ModelController:
 class ModelInstanceController:
     def __init__(self, cfg: Config):
         self._config = cfg
-        self._k8s_config = get_async_k8s_config(cfg=cfg)
-        self._disable_gateway = cfg.gateway_mode == GatewayModeEnum.disabled
 
         pass
 
@@ -155,9 +190,6 @@ class ModelInstanceController:
         """
         Start the controller.
         """
-        if not self._disable_gateway:
-            base_client = k8s_client.ApiClient(configuration=self._k8s_config)
-            self._higress_network_api = NetworkingHigressIoV1Api(base_client)
 
         async for event in ModelInstance.subscribe(source="model_instance_controller"):
             if event.type == EventType.HEARTBEAT:
@@ -177,15 +209,6 @@ class ModelInstanceController:
                 if not model:
                     return
                 model_deleting = model.deleted_at is not None
-
-                if not self._disable_gateway:
-                    await mcp_handler.ensure_model_instance_mcp_bridge(
-                        event_type=event.type,
-                        model_instance=model_instance,
-                        networking_higress_api=self._higress_network_api,
-                        namespace=self._config.gateway_namespace,
-                        cluster_id=model.cluster_id,
-                    )
 
                 if event.type == EventType.DELETED:
                     # trigger model replica sync
@@ -573,12 +596,7 @@ async def get_cluster_registry(
     cluster_registry = mcp_handler.cluster_registry(cluster_user.cluster)
     if cluster_registry is None:
         return None
-    return {100: cluster_registry}
-
-
-# Type alias for destination tuples
-# Each tuple contains (weight: int, model_name: str, registry: McpBridgeRegistry)
-DestinationTupleList = List[Tuple[int, str, McpBridgeRegistry]]
+    return cluster_registry
 
 
 async def sync_model_route_mapper(
@@ -587,8 +605,8 @@ async def sync_model_route_mapper(
     event_type: EventType,
     ingress_name: str,
     route_name: str,
-    destinations: DestinationTupleList,
-    fallback_destinations: DestinationTupleList,
+    destinations: mcp_handler.DestinationTupleList,
+    fallback_destinations: mcp_handler.DestinationTupleList,
 ):
     """
     Synchronize the model route mapper.
@@ -647,8 +665,8 @@ async def ensure_route_ai_proxy_config(
     cfg: Config,
     model_route_id: int,
     extensions_api: ExtensionsHigressIoV1Api,
-    route_destinations: DestinationTupleList,
-    fallback_destinations: DestinationTupleList,
+    route_destinations: mcp_handler.DestinationTupleList,
+    fallback_destinations: mcp_handler.DestinationTupleList,
 ):
     service_namespace_prefix = cfg.get_namespace() + "/"
     if cfg.get_namespace() == cfg.gateway_namespace:
@@ -656,59 +674,48 @@ async def ensure_route_ai_proxy_config(
     operating_id = mcp_handler.model_route_cleanup_prefix(model_route_id)
     ingress_name = mcp_handler.model_route_ingress_name(model_route_id)
     fallback_ingress_name = mcp_handler.fallback_ingress_name(ingress_name)
-
-    def destination_contains_provider(input: DestinationTupleList) -> bool:
-        for _, _, registry in input:
-            # the provider registry starts with the provider id prefix
-            if registry.name.startswith(mcp_handler.provider_id_prefix):
-                return True
-        return False
-
-    has_provider = destination_contains_provider(route_destinations)
-    fallback_has_provider = destination_contains_provider(fallback_destinations)
     expected_providers = []
     expected_match_rules = []
     # cross provider needs to configure ai_proxy
-    if has_provider != fallback_has_provider:
-        unique_registry_services: Set[str] = set(
-            registry.get_service_name()
-            for _, _, registry in route_destinations
-            if (not registry.name.startswith(mcp_handler.provider_id_prefix))
+    unique_registry_services: Set[str] = set(
+        registry.get_service_name()
+        for _, _, registry in route_destinations
+        if (not registry.name.startswith(mcp_handler.provider_id_prefix))
+    )
+    unique_fallback_registry_services: Set[str] = set(
+        registry.get_service_name()
+        for _, _, registry in fallback_destinations
+        if (not registry.name.startswith(mcp_handler.provider_id_prefix))
+    )
+
+    if len(unique_registry_services) + len(unique_fallback_registry_services) > 0:
+        expected_providers.append(
+            mcp_handler.ai_proxy_openai_provider_config(operating_id)
         )
-        unique_fallback_registry_services: Set[str] = set(
-            registry.get_service_name()
-            for _, _, registry in fallback_destinations
-            if (not registry.name.startswith(mcp_handler.provider_id_prefix))
+
+    if len(unique_registry_services) > 0:
+        expected_match_rules.append(
+            WasmPluginMatchRule(
+                config={
+                    "activeProviderId": operating_id,
+                },
+                configDisable=False,
+                service=list(unique_registry_services),
+                ingress=[f"{service_namespace_prefix}{ingress_name}"],
+            )
         )
-        if len(unique_registry_services) > 0:
-            expected_providers.append(
-                mcp_handler.ai_proxy_openai_provider_config(operating_id)
+    # same logic for fallback
+    if len(unique_fallback_registry_services) > 0:
+        expected_match_rules.append(
+            WasmPluginMatchRule(
+                config={
+                    "activeProviderId": operating_id,
+                },
+                configDisable=False,
+                service=list(unique_fallback_registry_services),
+                ingress=[f"{service_namespace_prefix}{fallback_ingress_name}"],
             )
-            expected_match_rules.append(
-                WasmPluginMatchRule(
-                    config={
-                        "activeProviderId": operating_id,
-                    },
-                    configDisable=False,
-                    service=list(unique_registry_services),
-                    ingress=[f"{service_namespace_prefix}{ingress_name}"],
-                )
-            )
-        # same logic for fallback
-        if len(unique_fallback_registry_services) > 0:
-            expected_providers.append(
-                mcp_handler.ai_proxy_openai_provider_config(f"{operating_id}-fallback")
-            )
-            expected_match_rules.append(
-                WasmPluginMatchRule(
-                    config={
-                        "activeProviderId": f"{operating_id}-fallback",
-                    },
-                    configDisable=False,
-                    service=list(unique_fallback_registry_services),
-                    ingress=[f"{service_namespace_prefix}{fallback_ingress_name}"],
-                )
-            )
+        )
 
     await mcp_handler.ensure_gpustack_ai_proxy_config(
         extensions_api=extensions_api,
@@ -748,6 +755,8 @@ async def sync_gateway(
         destinations=destinations,
         fallback_destinations=fallback_destinations,
     )
+    if event_type != EventType.DELETED and len(destinations) == 0:
+        destinations = fallback_destinations
     await mcp_handler.ensure_model_ingress(
         event_type=event_type,
         ingress_name=ingress_name,
@@ -793,14 +802,14 @@ async def sync_gateway(
 
 
 def flatten_destinations(
-    weight_to_count: List[Tuple[int, int, DestinationTupleList]],
+    weight_to_count: List[Tuple[int, int, mcp_handler.DestinationTupleList]],
     max_weight: Optional[int] = 0,
-) -> DestinationTupleList:
+) -> mcp_handler.DestinationTupleList:
     persentage_list = mcp_handler.hamilton_calculate_weight(
         [(weight, count) for weight, count, _ in weight_to_count],
         max_weight=max_weight,
     )
-    flatten_registry_list: DestinationTupleList = []
+    flatten_registry_list: mcp_handler.DestinationTupleList = []
     index = 0
     for _, _, registry_list_part in weight_to_count:
         for count, model_name, registry in registry_list_part:
@@ -814,17 +823,19 @@ def flatten_destinations(
 async def calculate_destinations(
     session: AsyncSession,
     model_route: ModelRoute,
-) -> Tuple[DestinationTupleList, DestinationTupleList]:
+) -> Tuple[mcp_handler.DestinationTupleList, mcp_handler.DestinationTupleList]:
     """
     return persentage Tuple for each registry with model name and the fallback registry
     """
-    weight_to_count: List[Tuple[int, int, DestinationTupleList]] = []
-    fallback_weight_to_count: DestinationTupleList = []
+    weight_to_count: List[Tuple[int, int, mcp_handler.DestinationTupleList]] = []
+    fallback_weight_to_count: List[
+        Tuple[int, int, mcp_handler.DestinationTupleList]
+    ] = []
     targets = await ModelRouteTarget.all_by_field(session, "route_id", model_route.id)
     for target in targets:
         if target.state != TargetStateEnum.ACTIVE:
             continue
-        to_extend: DestinationTupleList = []
+        to_extend: mcp_handler.DestinationTupleList = []
         if target.model_id is not None:
             model = await Model.one_by_id(session, target.model_id)
             if model is None:
@@ -864,7 +875,7 @@ async def provider_destinations(
     session: AsyncSession,
     provider_id: int,
     provider_model_name: str,
-) -> List[Tuple[int, str, McpBridgeRegistry]]:
+) -> mcp_handler.DestinationTupleList:
     """
     return count dict for provider registry
     """
@@ -877,47 +888,42 @@ async def provider_destinations(
 async def calculate_model_destinations(
     session: AsyncSession,
     model: Model,
-) -> List[Tuple[int, str, McpBridgeRegistry]]:
+) -> mcp_handler.DestinationTupleList:
     """
     return count dict for each registry
     """
     # find out is handling default cluster's model
     cluster_registry = await get_cluster_registry(session, model.cluster_id)
     if cluster_registry is not None:
-        return cluster_registry
+        return [(1, model.name, cluster_registry)]
 
     instances = await ModelInstance.all_by_field(session, "model_id", model.id)
-    # registry_dict is ip to instances
-    instances_by_worker_id: Dict[int, List[ModelInstance]] = {}
-    for instance in instances:
-        if (
-            instance.worker_ip is None
-            or instance.worker_ip == ""
-            or instance.port is None
-            or instance.state != ModelInstanceStateEnum.RUNNING
-        ):
-            continue
-        if instance.worker_id not in instances_by_worker_id:
-            instances_by_worker_id[instance.worker_id] = []
-        instances_by_worker_id[instance.worker_id].append(instance)
-
-    instances_related_workers = await Worker.all_by_fields(
+    instances = [
+        instance
+        for instance in instances
+        if instance.worker_ip is not None
+        and instance.port is not None
+        and instance.worker_ip != ""
+        and instance.state == ModelInstanceStateEnum.RUNNING
+    ]
+    worker_list = await Worker.all_by_fields(
         session=session,
-        extra_conditions=[Worker.id.in_(list(instances_by_worker_id.keys()))],
+        fields={
+            "cluster_id": model.cluster_id,
+            "deleted_at": None,
+        },
+        extra_conditions=[
+            Worker.id.in_(
+                [
+                    instance.worker_id
+                    for instance in instances
+                    if instance.worker_id is not None
+                ]
+            )
+        ],
     )
-
-    registry_list: List[Tuple[int, str, McpBridgeRegistry]] = []
-    for worker in instances_related_workers:
-        instances = instances_by_worker_id.get(worker.id, [])
-        if (
-            worker.proxy_mode is None
-            or worker.proxy_mode == ModelInstanceProxyModeEnum.WORKER
-        ):
-            registry = mcp_handler.worker_registry(worker)
-            if registry is not None:
-                registry_list.append((len(instances), model.name, registry))
-        else:
-            registry_list.extend(mcp_handler.model_instances_registry_list(instances))
+    workers = {worker.id: worker for worker in worker_list}
+    registry_list = mcp_handler.model_instances_registry_list(instances, workers)
 
     return registry_list
 
@@ -1989,38 +1995,18 @@ class ClusterController:
                 )
                 await cluster.update(session=session, auto_commit=True)
 
-    async def _get_worker_registries(
-        self, session: AsyncSession, cluster_id: int
-    ) -> List[McpBridgeRegistry]:
-        workers = await Worker.all_by_field(
-            session,
-            "cluster_id",
-            cluster_id,
-        )
-        workers = [
-            worker
-            for worker in workers
-            if worker.deleted_at is None
-            and (worker.advertise_address or worker.ip) != ""
-            and worker.port is not None
-        ]
-        worker_registry_list = [
-            mcp_handler.worker_registry(worker)
-            for worker in workers
-            if mcp_handler.worker_registry(worker) is not None
-        ]
-        worker_registry_list.sort(key=lambda r: r.name or "")
-        return worker_registry_list
-
     async def _ensure_worker_mcp_bridge(self, event: Event):
+        """
+        The worker registry list for cluster is no longer needed.
+        Use empty list to trigger MCPBridge controller to clean up the worker registries
+        and proxies when cluster is created or deleted.
+        """
         if self._cfg.gateway_mode == GatewayModeEnum.disabled:
             return
         cluster: Cluster = event.data
-        mcp_resource_name = mcp_handler.cluster_mcp_bridge_name(cluster.id)
+        mcp_resource_name = mcp_handler.default_mcp_bridge_name
         desired_registries = []
         to_delete_prefix = mcp_handler.cluster_worker_prefix(cluster.id)
-        async with async_session() as session:
-            desired_registries = await self._get_worker_registries(session, cluster.id)
         try:
             await mcp_handler.ensure_mcp_bridge(
                 client=self._higress_network_api,
@@ -2037,6 +2023,13 @@ class ClusterController:
 async def notify_model_route_target(session: AsyncSession, model: Model, event: Event):
     if event.type == EventType.DELETED:
         return
+    should_notify = False
+    if event.changed_fields is not None:
+        related_fields = ["ready_replicas", "replicas"]
+        for field in related_fields:
+            if field in event.changed_fields:
+                should_notify = True
+                break
     model: Model = await Model.one_by_id(
         session=session,
         id=model.id,
@@ -2048,18 +2041,24 @@ async def notify_model_route_target(session: AsyncSession, model: Model, event: 
         return
     targets = model.model_route_targets
     for target in targets:
-        target_state = (
-            TargetStateEnum.ACTIVE
-            if model.ready_replicas > 0
-            else TargetStateEnum.UNAVAILABLE
-        )
-        if target.state != target_state:
+        if should_notify:
             target_copy = ModelRouteTarget(**target.model_dump())
             await event_bus.publish(
                 target_copy.__class__.__name__.lower(),
                 Event(
                     type=EventType.UPDATED,
                     data=target_copy,
+                    changed_fields={
+                        "model": (
+                            {},
+                            {
+                                "id": model.id,
+                                "name": model.name,
+                                "ready_replicas": model.ready_replicas,
+                                "replicas": model.replicas,
+                            },
+                        )
+                    },
                 ),
             )
 
@@ -2217,6 +2216,7 @@ class ModelRouteTargetController:
             "provider_id",
             "model_id",
             "provider_model_name",
+            "model",
         ]
         should_notify = event.type == EventType.DELETED
         if not should_notify:
@@ -2263,12 +2263,52 @@ class ModelRouteTargetController:
             target.state = target_state
             await target.update(session=session, auto_commit=True)
 
+    async def _update_orphan_route(
+        self, session: AsyncSession, target: ModelRouteTarget, event: Event
+    ) -> bool:
+        """
+        Update the orphan route if the target is deleted or has no associated model.
+        If the target model is not deleted, transfer model_route to a non model-created model.
+        """
+
+        if event.type != EventType.DELETED:
+            return True
+        if target.model_id is None:
+            return True
+        model = await Model.one_by_id(session, target.model_id)
+        if not model or model.deleted_at is not None:
+            return True
+        # If the model is not deleted, transfer the model route to a non model-created model route to avoid service disruption.
+        # The model route will be automatically deleted by the controller after the target is deleted.
+        orphan_route = await ModelRoute.one_by_id(session=session, id=target.route_id)
+        if (
+            not orphan_route
+            or orphan_route.deleted_at is not None
+            or not orphan_route.created_by_model
+        ):
+            # The route is already deleted or not created by model, no need to transfer.
+            # returns true to trigger parent notification and state sync to update the route state if needed.
+            return True
+        try:
+            route_service = ModelRouteService(session=session)
+            await route_service.update(
+                orphan_route, source={"created_by_model": False}, auto_commit=True
+            )
+        except Exception as e:
+            logger.error(f"Failed to transfer model route {orphan_route.id}: {e}")
+            return True
+        return False
+
     async def _reconcile(self, event: Event):
         target: ModelRouteTarget = event.data
         if not target:
             return
         async with async_session() as session:
-            await self._notify_parents(session, target, event)
+            should_notify_parents = await self._update_orphan_route(
+                session, target, event
+            )
+            if should_notify_parents:
+                await self._notify_parents(session, target, event)
             await self._sync_state(session, target, event)
 
 

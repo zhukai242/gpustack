@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import sys
@@ -6,7 +7,7 @@ from typing import Dict, List, Optional
 from gpustack.client.generated_clientset import ClientSet
 from gpustack.config.config import Config, set_global_config
 from gpustack.config.registration import read_worker_token
-from gpustack.envs import BENCHMARK_DATASET_SHAREGPT_PATH
+from gpustack.envs import BENCHMARK_DATASET_SHAREGPT_PATH, BENCHMARK_REQUEST_TIMEOUT
 from gpustack.logging import setup_logging
 from gpustack.schemas.benchmark import (
     DATASET_RANDOM,
@@ -208,15 +209,12 @@ class BenchmarkRunner:
         logger.info(f"Created benchmark container workload: {deployment_metadata.name}")
 
     def _build_command_args(self) -> List[str]:
-        data = ""
-        if self._benchmark.dataset_name == DATASET_SHAREGPT:
-            data = BENCHMARK_DATASET_SHAREGPT_PATH
-        elif (
-            self._benchmark.dataset_name == DATASET_RANDOM
-            and self._benchmark.dataset_input_tokens is not None
-            and self._benchmark.dataset_output_tokens is not None
-        ):
-            data = f"prompt_tokens={self._benchmark.dataset_input_tokens},output_tokens={self._benchmark.dataset_output_tokens}"
+        backend_kwargs = {
+            "timeout": BENCHMARK_REQUEST_TIMEOUT,
+            "response_handlers": {
+                "chat_completions": "chat_completions_with_reasoning"
+            },
+        }
 
         command_args = [
             "benchmark",
@@ -227,8 +225,6 @@ class BenchmarkRunner:
             "constant",
             "--rate",
             str(self._benchmark.request_rate),
-            "--data",
-            data,
             "--sample-requests",
             "0",
             "--processor",
@@ -236,12 +232,34 @@ class BenchmarkRunner:
             "--output-dir",
             f"{self._benchmark_dir}",
             "--outputs",
-            f"{self._benchmark.id}.json",
+            f"{self._benchmark.id}.dual_json",
             "--progress-url",
             self._api_url,
             "--progress-auth",
             self._api_key,
+            "--backend-kwargs",
+            json.dumps(backend_kwargs),
         ]
+
+        if self._benchmark.dataset_name == DATASET_SHAREGPT:
+            data = BENCHMARK_DATASET_SHAREGPT_PATH
+            command_args.extend(["--data", data])
+        elif (
+            self._benchmark.dataset_name == DATASET_RANDOM
+            and self._benchmark.dataset_input_tokens is not None
+            and self._benchmark.dataset_output_tokens is not None
+        ):
+            data = f"prompt_tokens={self._benchmark.dataset_input_tokens},output_tokens={self._benchmark.dataset_output_tokens}"
+            command_args.extend(["--data", data])
+
+            if self._benchmark.dataset_seed is not None:
+                command_args.extend(
+                    [
+                        "--random-seed",
+                        f"{self._benchmark.dataset_seed}",
+                    ]
+                )
+
         if (
             self._benchmark.total_requests is not None
             and self._benchmark.total_requests > 0

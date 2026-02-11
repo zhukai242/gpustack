@@ -12,6 +12,8 @@ from alembic import op
 import sqlalchemy as sa
 import sqlmodel
 import json
+import hashlib
+
 import gpustack
 from sqlalchemy.dialects import postgresql
 from gpustack.migrations.utils import table_exists
@@ -76,6 +78,56 @@ def upgrade() -> None:
        
     _migrate_model_gpu_selector(UPGRADE_GPU_TYPE_MAPPING)
     
+    # Create benchmarks table
+    op.create_table('benchmarks',
+    sa.Column('created_at', gpustack.schemas.common.UTCDateTime(), nullable=False),
+    sa.Column('updated_at', gpustack.schemas.common.UTCDateTime(), nullable=False),
+    sa.Column('deleted_at', gpustack.schemas.common.UTCDateTime(), nullable=True),
+    sa.Column('raw_metrics', sa.JSON(), nullable=True),
+    sa.Column('requests_per_second_mean', sa.Float(), nullable=True),
+    sa.Column('request_latency_mean', sa.Float(), nullable=True),
+    sa.Column('time_per_output_token_mean', sa.Float(), nullable=True),
+    sa.Column('inter_token_latency_mean', sa.Float(), nullable=True),
+    sa.Column('time_to_first_token_mean', sa.Float(), nullable=True),
+    sa.Column('tokens_per_second_mean', sa.Float(), nullable=True),
+    sa.Column('output_tokens_per_second_mean', sa.Float(), nullable=True),
+    sa.Column('input_tokens_per_second_mean', sa.Float(), nullable=True),
+    sa.Column('request_concurrency_mean', sa.Float(), nullable=True),
+    sa.Column('request_concurrency_max', sa.Float(), nullable=True),
+    sa.Column('request_total', sa.Integer(), nullable=True),
+    sa.Column('request_successful', sa.Integer(), nullable=True),
+    sa.Column('request_errored', sa.Integer(), nullable=True),
+    sa.Column('request_incomplete', sa.Integer(), nullable=True),
+    sa.Column('snapshot', gpustack.schemas.common.JSON(), nullable=True),
+    sa.Column('gpu_summary', sa.Text(), nullable=True),
+    sa.Column('gpu_vendor_summary', sa.Text(), nullable=True),
+    sa.Column('name', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
+    sa.Column('profile', sqlmodel.sql.sqltypes.AutoString(), nullable=True, server_default="Custom"),
+    sa.Column('dataset_name', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
+    sa.Column('dataset_input_tokens', sa.Integer(), nullable=True),
+    sa.Column('dataset_output_tokens', sa.Integer(), nullable=True),
+    sa.Column('dataset_seed', sa.Integer(), nullable=True),
+    sa.Column('description', sa.Text(), nullable=True),
+    sa.Column('cluster_id', sa.Integer(), nullable=False),
+    sa.Column('model_id', sa.Integer(), nullable=True),
+    sa.Column('model_name', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
+    sa.Column('model_instance_name', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
+    sa.Column('request_rate', sa.Integer(), nullable=False),
+    sa.Column('total_requests', sa.Integer(), nullable=True),
+    sa.Column('state', sa.Enum('PENDING', 'RUNNING', 'QUEUED', 'STOPPED', 'ERROR', 'UNREACHABLE', 'COMPLETED', name='benchmarkstateenum'), nullable=False),
+    sa.Column('state_message', sa.Text(), nullable=True),
+    sa.Column('progress', sa.Float(), nullable=True),
+    sa.Column('worker_id', sa.Integer(), nullable=True),
+    sa.Column('pid', sa.Integer(), nullable=True),
+    sa.Column('id', sa.Integer(), nullable=False),
+    sa.PrimaryKeyConstraint('id')
+    )
+    
+    with op.batch_alter_table('benchmarks', schema=None) as batch_op:
+        batch_op.create_index(batch_op.f('ix_benchmarks_name'), ['name'], unique=True)
+
+    add_inference_backend_source_and_metadata()
+    recalculate_index_for_modelscope_sources()
 
 
 def downgrade() -> None:
@@ -92,6 +144,13 @@ def downgrade() -> None:
     
     _migrate_model_gpu_selector(DOWNGRADE_GPU_TYPE_MAPPING)
         
+
+    reverse_recalculate_index_for_modelscope_sources()
+    remove_inference_backend_source_and_metadata()
+
+    with op.batch_alter_table('benchmarks', schema=None) as batch_op:
+        batch_op.drop_index(batch_op.f('ix_benchmarks_name'))
+    op.drop_table('benchmarks')
 
 def _migrate_model_gpu_selector(gpu_type_map: dict[str, str]) -> None:
     conn = op.get_bind()
@@ -309,3 +368,86 @@ def public_maas_integration_downgrade():
         pass
     # Drop model_providers table
     op.drop_table('model_providers', if_exists=True)
+
+
+def add_inference_backend_source_and_metadata():
+    """Add backend_source, enabled, icon, default_env columns and change description to Text."""
+    with op.batch_alter_table('inference_backends', schema=None) as batch_op:
+        batch_op.add_column(sa.Column('backend_source', sqlmodel.sql.sqltypes.AutoString(), nullable=True))
+        batch_op.add_column(sa.Column('enabled', sa.Boolean(), nullable=True))
+        batch_op.add_column(sa.Column('icon', sa.Text(), nullable=True))
+        batch_op.add_column(sa.Column('default_env', sa.JSON(), nullable=True))
+        batch_op.alter_column('description',
+                              existing_type=sa.String(length=255),
+                              type_=sa.Text(),
+                              existing_nullable=True)
+
+
+def remove_inference_backend_source_and_metadata():
+    """Remove backend_source, enabled, icon, default_env columns and revert description to String(255)."""
+    with op.batch_alter_table('inference_backends', schema=None) as batch_op:
+        batch_op.drop_column('backend_source')
+        batch_op.drop_column('enabled')
+        batch_op.drop_column('icon')
+        batch_op.drop_column('default_env')
+        batch_op.alter_column('description',
+                              existing_type=sa.Text(),
+                              type_=sa.String(length=255),
+                              existing_nullable=True)
+
+
+def _calc_index_for_modelscope_source(source, ms_model_id, ms_file_path, include_source):
+    values = []
+    if source == 'MODEL_SCOPE':
+        if include_source:
+            values.append(str(source))
+        if ms_model_id:
+            values.append(ms_model_id)
+        if ms_file_path:
+            values.append(ms_file_path)
+
+    filtered_values = [v for v in values if v is not None]
+    source_string = "/".join(filtered_values)
+    return hashlib.sha256(source_string.encode()).hexdigest()
+
+
+def recalculate_index_for_modelscope_sources():
+    """Recalculate source_index to include source type for different sources."""
+    conn = op.get_bind()
+
+    result = conn.execute(sa.text("""
+        SELECT id, source, huggingface_repo_id, huggingface_filename,
+               model_scope_model_id, model_scope_file_path, local_path
+        FROM model_files
+        WHERE deleted_at IS NULL AND source = 'MODEL_SCOPE'
+    """))
+
+    for row in result:
+        new_source_index = _calc_index_for_modelscope_source(row.source, row.model_scope_model_id,
+                                                             row.model_scope_file_path, True)
+
+        conn.execute(
+            sa.text("UPDATE model_files SET source_index = :new_index WHERE id = :id"),
+            {"new_index": new_source_index, "id": row.id}
+        )
+
+
+def reverse_recalculate_index_for_modelscope_sources():
+    """Recalculate source_index with old logic (without source type prefix)."""
+    conn = op.get_bind()
+
+    result = conn.execute(sa.text("""
+        SELECT id, source, huggingface_repo_id, huggingface_filename,
+               model_scope_model_id, model_scope_file_path, local_path
+        FROM model_files
+        WHERE deleted_at IS NULL AND source = 'MODEL_SCOPE'
+    """))
+
+    for row in result:
+        old_source_index = _calc_index_for_modelscope_source(row.source, row.model_scope_model_id,
+                                                             row.model_scope_file_path, False)
+
+        conn.execute(
+            sa.text("UPDATE model_files SET source_index = :old_index WHERE id = :id"),
+            {"old_index": old_source_index, "id": row.id}
+        )

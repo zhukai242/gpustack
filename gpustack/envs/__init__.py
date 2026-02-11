@@ -89,6 +89,8 @@ GATEWAY_MIRROR_INGRESS_NAME = os.getenv(
     "GPUSTACK_GATEWAY_MIRROR_INGRESS_NAME", "gpustack"
 )
 
+GATEWAY_EXTERNAL_METRICS_URL = os.getenv("GPUSTACK_GATEWAY_EXTERNAL_METRICS_URL", None)
+
 DEFAULT_CLUSTER_KUBERNETES = (
     os.getenv("GPUSTACK_DEFAULT_CLUSTER_KUBERNETES", "false").lower() == "true"
 )
@@ -100,3 +102,6 @@ BENCHMARK_DATASET_SHAREGPT_PATH = os.getenv(
     "GPUSTACK_BENCHMARK_DATASET_SHAREGPT_PATH",
     "/workspace/benchmark-runner/sharegpt_data/ShareGPT_V3_unfiltered_cleaned_split.json",
 )
+BENCHMARK_REQUEST_TIMEOUT = int(
+    os.getenv("GPUSTACK_BENCHMARK_REQUEST_TIMEOUT", 3600)  # 1 hour
+)  # in seconds

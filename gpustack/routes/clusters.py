@@ -1,8 +1,9 @@
 import math
 import secrets
 from typing import Any, Callable, Optional, Union
-from fastapi import APIRouter, Depends, Request, Response
-from fastapi.responses import StreamingResponse
+from urllib.parse import urlencode
+from fastapi import APIRouter, Depends, Request, Response, Query
+from fastapi.responses import RedirectResponse, StreamingResponse
 from enum import Enum
 from sqlalchemy.orm import selectinload
 
@@ -37,6 +38,8 @@ from gpustack.schemas.api_keys import ApiKey
 from gpustack.security import get_secret_hash, API_KEY_PREFIX
 from gpustack.k8s.manifest_template import TemplateConfig
 from gpustack.config.config import get_global_config, get_cluster_image_name
+from gpustack.utils.grafana import resolve_grafana_base_url
+from gpustack_runtime.detector import ManufacturerEnum
 
 CLUSTER_LOAD_OPTIONS = [
     selectinload(Cluster.cluster_workers),
@@ -405,7 +408,14 @@ async def get_registration_token(request: Request, session: SessionDep, id: int)
 
 
 @router.get("/{id}/manifests")
-async def get_cluster_manifests(request: Request, session: SessionDep, id: int):
+async def get_cluster_manifests(
+    request: Request,
+    session: SessionDep,
+    id: int,
+    runtime: Optional[ManufacturerEnum] = Query(
+        None, description="Optional runtime to include in the manifest"
+    ),
+):
     cluster = await Cluster.one_by_id(session, id)
     if not cluster or cluster.deleted_at is not None:
         raise NotFoundException(message=f"cluster {id} not found")
@@ -417,6 +427,7 @@ async def get_cluster_manifests(request: Request, session: SessionDep, id: int):
         registration=get_registration_from_cluster(request, cluster),
         cluster_suffix=cluster.hashed_suffix,
         namespace=getattr(cluster.worker_config, "namespace", None),
+        runtime_enum=runtime,
     )
     yaml_content = config.render()
     return Response(
@@ -424,3 +435,29 @@ async def get_cluster_manifests(request: Request, session: SessionDep, id: int):
         media_type="application/x-yaml",
         headers={"Content-Disposition": "attachment; filename=manifest.yaml"},
     )
+
+
+@router.get("/{id}/dashboard")
+async def get_cluster_dashboard(
+    session: SessionDep,
+    id: int,
+    request: Request,
+):
+    cluster = await Cluster.one_by_id(session, id)
+    if not cluster:
+        raise NotFoundException(message="cluster not found")
+
+    cfg = get_global_config()
+    if not cfg.get_grafana_url() or not cfg.grafana_worker_dashboard_uid:
+        raise InternalServerErrorException(
+            message="Grafana dashboard settings are not configured"
+        )
+    query_params = {"var-cluster_name": cluster.name}
+
+    grafana_base = resolve_grafana_base_url(cfg, request)
+    slug = "gpustack-worker"
+    dashboard_url = f"{grafana_base}/d/{cfg.grafana_worker_dashboard_uid}/{slug}"
+    if query_params:
+        dashboard_url = f"{dashboard_url}?{urlencode(query_params)}"
+
+    return RedirectResponse(url=dashboard_url, status_code=302)
