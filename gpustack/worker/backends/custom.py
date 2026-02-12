@@ -115,6 +115,11 @@ class CustomServer(InferenceServer):
                         self._config.storage_dir, self._model_instance.name, 'output'
                     ),
                 ),
+                # Add model path environment variable
+                ContainerEnv(
+                    name="model_path",
+                    value=self._model_path,
+                ),
                 # Add dataset path environment variable if model has dataset_id
                 *(
                     [
