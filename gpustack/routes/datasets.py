@@ -563,7 +563,8 @@ async def delete_dataset(
         raise NotFoundException(message="Dataset not found")
 
     try:
-        await Dataset.delete(session, id)
+        # 直接删除数据集，级联删除会自动处理相关版本
+        await dataset.delete(session)
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to delete dataset: {e}")
 

@@ -426,6 +426,33 @@ async def create_model(
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to create model: {e}")
 
+    # 模型部署成功后，需要将model-catalog对应的is_deployed设置为True
+    # model_in的local_path来确定对应的model_catalog_spec
+    # 根据model_catalog_spec确定model_catalog
+    try:
+        # 根据local_path查找对应的model_catalog_spec
+        from gpustack.schemas.model_catalog import ModelCatalogSpec
+
+        spec_result = await session.exec(
+            select(ModelCatalogSpec).where(
+                ModelCatalogSpec.local_path == model_in.local_path,
+                ModelCatalogSpec.deleted_at.is_(None),
+            )
+        )
+        spec = spec_result.first()
+
+        # 如果找到spec，获取对应的model_catalog并设置is_deployed为True
+        if spec:
+            model_catalog = await ModelCatalog.one_by_id(session, spec.model_catalog_id)
+            if model_catalog:
+                model_catalog.is_deployed = True
+                await session.commit()
+    except Exception as e:
+        # 记录错误但不影响模型创建
+        import logging
+
+        logging.error(f"Failed to update model catalog is_deployed: {e}")
+
     return model
 
 
@@ -468,6 +495,44 @@ async def delete_model(session: SessionDep, id: int):
 
     try:
         await ModelService(session).delete(model)
+        # 根据local_path查找对应的model_catalog_spec
+        from gpustack.schemas.model_catalog import ModelCatalogSpec
+
+        spec_result = await session.exec(
+            select(ModelCatalogSpec).where(
+                ModelCatalogSpec.local_path == model.local_path,
+                ModelCatalogSpec.deleted_at.is_(None),
+            )
+        )
+        spec = spec_result.first()
+
+        # 如果找到spec，获取对应的model_catalog并设置is_deployed为False
+        if spec:
+            model_catalog = await ModelCatalog.one_by_id(session, spec.model_catalog_id)
+            # 增加一个判断，就是没有其他的部署也用到此model_catalog
+            # 查看当前部署的所有models中是否还有引用此model_catalog的
+            if model_catalog:
+                # 查询是否有其他模型使用此model_catalog
+                from gpustack.schemas.model_catalog import ModelCatalogSpec
+
+                other_models_result = await session.exec(
+                    select(Model)
+                    .join(
+                        ModelCatalogSpec,
+                        Model.local_path == ModelCatalogSpec.local_path,
+                    )
+                    .where(
+                        ModelCatalogSpec.model_catalog_id == model_catalog.id,
+                        Model.id != model.id,  # 排除当前正在删除的模型
+                        Model.deleted_at.is_(None),
+                    )
+                )
+                other_models = other_models_result.all()
+
+                # 如果没有其他模型使用此model_catalog，则将is_deployed设置为False
+                if not other_models:
+                    model_catalog.is_deployed = False
+                    await session.commit()
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to delete model: {e}")
 

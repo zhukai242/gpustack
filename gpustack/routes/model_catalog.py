@@ -3,7 +3,11 @@ from sqlmodel import select
 from typing import List, Optional, Dict, Any
 import sqlalchemy as sa
 
-from gpustack.api.exceptions import NotFoundException, AlreadyExistsException
+from gpustack.api.exceptions import (
+    NotFoundException,
+    AlreadyExistsException,
+    BadRequestException,
+)
 from gpustack.server.deps import SessionDep, get_admin_user
 from gpustack.schemas.model_catalog import (
     ModelCatalog,
@@ -702,22 +706,51 @@ async def delete_model_catalog(
     current_user: User = Depends(get_admin_user),
 ):
     """删除模型目录"""
+    import os
+    import shutil
+
     # 只删除当前租户的模型
-    model_catalog = await session.exec(
+    result = await session.exec(
         select(ModelCatalog).where(
             ModelCatalog.id == model_catalog_id,
             ModelCatalog.tenant_id == current_user.tenant_id,
             ModelCatalog.deleted_at.is_(None),
         )
-    ).first()
+    )
+    model_catalog = result.first()
 
     if not model_catalog:
         raise NotFoundException(f"模型目录 ID {model_catalog_id} 不存在")
 
-    # 软删除模型目录
-    model_catalog.soft_delete(session)
+    # 检查模型是否已部署，如果已部署则不能删除
+    if model_catalog.is_deployed:
+        raise BadRequestException(f"模型目录 ID {model_catalog_id} 已部署，无法删除")
 
-    session.commit()
+    # 删除关联规格的本地路径
+    spec_result = await session.exec(
+        select(ModelCatalogSpec).where(
+            ModelCatalogSpec.model_catalog_id == model_catalog_id,
+            ModelCatalogSpec.deleted_at.is_(None),
+        )
+    )
+    specs = spec_result.all()
+
+    for spec in specs:
+        if spec.local_path and os.path.exists(spec.local_path):
+            try:
+                if os.path.isdir(spec.local_path):
+                    shutil.rmtree(spec.local_path)
+                else:
+                    os.remove(spec.local_path)
+            except Exception as e:
+                # 记录错误但继续执行
+                import logging
+
+                logging.error(f"Failed to delete local path {spec.local_path}: {e}")
+
+    # 直接删除模型目录，级联删除会自动处理相关规格
+    await session.delete(model_catalog)
+    await session.commit()
 
     return {"message": f"模型目录 ID {model_catalog_id} 已删除"}
 

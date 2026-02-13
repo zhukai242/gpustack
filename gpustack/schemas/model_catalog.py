@@ -46,7 +46,8 @@ class ModelCatalog(ModelCatalogBase, BaseModelMixin, table=True):
 
     # 关系
     specs: List["ModelCatalogSpec"] = Relationship(
-        back_populates="model_catalog", cascade_delete=True
+        back_populates="model_catalog",
+        sa_relationship_kwargs={"cascade": "all, delete-orphan", "lazy": "noload"},
     )
     creator: Optional["User"] = Relationship(
         sa_relationship_kwargs={
