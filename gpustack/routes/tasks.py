@@ -35,6 +35,7 @@ class TaskInfoResponse(BaseModel):
 
     id: int
     name: str
+    model_id: int
     model_name: str
     group: str
     type: str
@@ -70,6 +71,7 @@ class TaskListResponse(BaseModel):
 class ResourceUsageStatsResponse(BaseModel):
     """资源使用统计响应"""
 
+    model_id: int
     model_name: str
     usage_data: List[ResourceUsageResponse]
 
@@ -375,6 +377,7 @@ async def _build_task_info(
     return TaskInfoResponse(
         id=instance.id,
         name=instance.name,
+        model_id=instance.model_id,
         model_name=instance.model_name,
         group=creator.username if creator else "",
         type=task_type,
@@ -448,10 +451,13 @@ async def get_train_task_list(
 
     # 查询当前活跃的训练任务实例
     current_instances = []
+    current_model_ids = set()
     if model_ids:
         statement = select(ModelInstance).where(ModelInstance.model_id.in_(model_ids))
         instances_result = await session.exec(statement)
         current_instances = instances_result.all()
+        # 获取有活跃实例的模型ID
+        current_model_ids = {instance.model_id for instance in current_instances}
 
     # 查询历史训练任务实例
     history_instances = []
@@ -463,7 +469,23 @@ async def get_train_task_list(
     history_result = await session.exec(statement)
     history_instances = history_result.all()
 
-    # 合并两个列表
+    # 查询停止状态的训练任务（replicas=0且无活跃实例）
+    stopped_instances = []
+    if model_ids:
+        # 查询replicas=0且无活跃实例的模型
+        stopped_models_result = await session.exec(
+            select(Model).where(
+                Model.id.in_(model_ids),
+                Model.replicas == 0,
+                ~Model.id.in_(current_model_ids),
+            )
+        )
+        stopped_models = stopped_models_result.all()
+        # 为每个停止的模型创建任务信息
+        for model in stopped_models:
+            stopped_instances.append(model)
+
+    # 合并列表
     all_instances = []
 
     # 添加当前实例
@@ -473,6 +495,10 @@ async def get_train_task_list(
     # 添加历史实例
     for instance in history_instances:
         all_instances.append((instance, True))  # 标记为历史任务
+
+    # 添加停止状态的实例
+    for model in stopped_instances:
+        all_instances.append((model, "stopped"))  # 标记为停止状态任务
 
     # 按照创建时间排序
     all_instances.sort(key=lambda x: x[0].created_at, reverse=True)
@@ -490,8 +516,41 @@ async def get_train_task_list(
 
     # 构建响应
     items = []
-    for instance, is_history in paginated_instances:
-        if is_history:
+    for item in paginated_instances:
+        # 处理不同类型的项
+        if len(item) == 2:
+            instance, marker = item
+        else:
+            instance, marker = item, False
+
+        if marker == "stopped":
+            # 停止状态的任务，只构建基本信息
+            # 获取创建者信息
+            creator = None
+            if hasattr(instance, 'created_by'):
+                creator_result = await session.exec(
+                    select(User).where(User.id == instance.created_by)
+                )
+                creator = creator_result.one_or_none()
+
+            # 构建基本任务信息
+            task_info = TaskInfoResponse(
+                id=instance.id,
+                name=instance.name,
+                model_id=instance.id,
+                model_name=instance.name,
+                group=creator.username if creator else "",
+                type="training",
+                status=ModelInstanceStateEnum.STOPPED,
+                queue_position=None,
+                queue_time=None,
+                uptime=None,
+                username=creator.username if creator else None,
+                actual_gpu_utilization=None,
+                actual_vram_utilization=None,
+                estimated_vram_usage=None,
+            )
+        elif marker:
             # 历史任务，只构建基本信息
             # 获取创建者信息
             creator = None
@@ -509,6 +568,7 @@ async def get_train_task_list(
             task_info = TaskInfoResponse(
                 id=instance.id,
                 name=instance.name,
+                model_id=instance.model_id,
                 model_name=instance.model_name,
                 group=creator.username if creator else "",
                 type="training",
@@ -529,120 +589,155 @@ async def get_train_task_list(
     return TaskListResponse(items=items, total=total)
 
 
-@router.get("/resource-usage", response_model=List[ResourceUsageStatsResponse])
-async def get_resource_usage_stats(
-    session: SessionDep,
-    current_user: CurrentUserDep,
-    hours: int = Query(24, ge=1, le=168, description="统计小时数"),
-):
-    """获取当前运行中模型的资源使用统计，按时间维度"""
-    # 查询当前租户下的所有模型ID
-    model_ids_result = await session.exec(
-        select(Model.id)
-        .join(User, Model.created_by == User.id)
-        .where(User.tenant_id == current_user.tenant_id)
-    )
-    model_ids = model_ids_result.all()
+async def _get_filtered_model_ids(
+    session: SessionDep, current_user: CurrentUserDep, model_id: Optional[int]
+) -> List[int]:
+    """获取过滤后的模型ID列表"""
+    if model_id:
+        # 检查模型是否存在且属于当前租户
+        model_result = await session.exec(
+            select(Model)
+            .join(User, Model.created_by == User.id)
+            .where(User.tenant_id == current_user.tenant_id)
+            .where(Model.id == model_id)
+        )
+        model = model_result.one_or_none()
+        if not model:
+            return []
+        return [model_id]
+    else:
+        # 查询当前租户下的所有模型ID
+        model_ids_result = await session.exec(
+            select(Model.id)
+            .join(User, Model.created_by == User.id)
+            .where(User.tenant_id == current_user.tenant_id)
+        )
+        return model_ids_result.all()
 
-    if not model_ids:
-        return []
 
-    # 查询当前运行中的模型实例
+async def _get_running_instances(
+    session: SessionDep, model_ids: List[int]
+) -> List[ModelInstance]:
+    """获取运行中的模型实例"""
     running_instances_result = await session.exec(
         select(ModelInstance).where(
             ModelInstance.model_id.in_(model_ids),
             ModelInstance.state == ModelInstanceStateEnum.RUNNING,
         )
     )
-    running_instances = running_instances_result.all()
+    return running_instances_result.all()
 
-    # 构建响应
+
+def _get_closest_gpu_load(gpu_loads, target_timestamp: int):
+    """找到最接近给定时间戳的GPU负载数据"""
+    closest_load = None
+    min_time_diff = float('inf')
+
+    for load in gpu_loads:
+        time_diff = abs(load.timestamp - target_timestamp)
+        if time_diff < min_time_diff:
+            min_time_diff = time_diff
+            closest_load = load
+
+    return closest_load
+
+
+async def _calculate_usage_data(
+    session: SessionDep, instance: ModelInstance, hours: int
+) -> List[ResourceUsageResponse]:
+    """计算每个实例的使用数据"""
+    usage_data = []
+    gpu_load_service = GPULoadService(session)
+
+    # 计算时间范围
+    from datetime import timedelta
+
+    end_time = datetime.now(timezone.utc)
+    start_time = end_time - timedelta(hours=hours)
+    start_timestamp = int(start_time.timestamp())
+    end_timestamp = int(end_time.timestamp())
+
+    # 按时间间隔获取数据（每小时一个数据点）
+    interval = 3600  # 1小时
+    current_timestamp = start_timestamp
+
+    while current_timestamp <= end_timestamp:
+        # 计算该时间点的GPU使用率平均值
+        total_gpu_util = 0.0
+        total_vram_util = 0.0
+        valid_gpu_count = 0
+
+        # 从instance.gpu_indexes和worker_id获取GPU信息
+        if instance.gpu_indexes and instance.worker_id:
+            for gpu_index in instance.gpu_indexes:
+                try:
+                    # 查询该GPU在该时间点附近的负载数据
+                    gpu_loads = await gpu_load_service.get_by_gpu_index(
+                        instance.worker_id, gpu_index, limit=100
+                    )
+
+                    # 找到最接近current_timestamp的数据点
+                    closest_load = _get_closest_gpu_load(gpu_loads, current_timestamp)
+
+                    # 如果找到有效的数据点
+                    if closest_load and closest_load.gpu_utilization is not None:
+                        total_gpu_util += closest_load.gpu_utilization
+                        valid_gpu_count += 1
+                        if closest_load.vram_utilization is not None:
+                            total_vram_util += closest_load.vram_utilization
+                except Exception:
+                    # 忽略单个GPU查询失败的情况，继续处理其他GPU
+                    pass
+
+        # 计算平均值
+        if valid_gpu_count > 0:
+            avg_gpu_util = round(total_gpu_util / valid_gpu_count, 2)
+            avg_vram_util = (
+                round(total_vram_util / valid_gpu_count, 2)
+                if total_vram_util > 0
+                else 0.0
+            )
+
+            # 添加到使用数据列表
+            time_point = datetime.fromtimestamp(current_timestamp, timezone.utc)
+            usage_data.append(
+                ResourceUsageResponse(
+                    time=time_point.isoformat(),
+                    gpu_utilization=avg_gpu_util,
+                    vram_usage=avg_vram_util,
+                )
+            )
+
+        # 移动到下一个时间点
+        current_timestamp += interval
+
+    return usage_data
+
+
+@router.get("/resource-usage", response_model=List[ResourceUsageStatsResponse])
+async def get_resource_usage_stats(
+    session: SessionDep,
+    current_user: CurrentUserDep,
+    hours: int = Query(24, ge=1, le=168, description="统计小时数"),
+    model_id: Optional[int] = Query(
+        None, description="模型ID，指定后只获取该模型的资源使用统计"
+    ),
+):
+    """获取当前运行中模型的资源使用统计，按时间维度"""
+    # 执行主逻辑
+    model_ids = await _get_filtered_model_ids(session, current_user, model_id)
+    if not model_ids:
+        return []
+
+    running_instances = await _get_running_instances(session, model_ids)
+
     stats = []
     for instance in running_instances:
-        # 获取模型信息
-        model_result = await session.exec(
-            select(Model).where(Model.id == instance.model_id)
-        )
-        model = model_result.one_or_none()
-
-        if not model:
-            continue
-
-        # 从GPU负载服务获取历史数据
-        usage_data = []
-        gpu_load_service = GPULoadService(session)
-
-        # 计算时间范围
-        from datetime import timedelta
-
-        end_time = datetime.now(timezone.utc)
-        start_time = end_time - timedelta(hours=hours)
-        start_timestamp = int(start_time.timestamp())
-        end_timestamp = int(end_time.timestamp())
-
-        # 按时间间隔获取数据（每小时一个数据点）
-        interval = 3600  # 1小时
-        current_timestamp = start_timestamp
-
-        while current_timestamp <= end_timestamp:
-            # 计算该时间点的GPU使用率平均值
-            total_gpu_util = 0.0
-            total_vram_util = 0.0
-            valid_gpu_count = 0
-
-            # 从instance.gpu_indexes和worker_id获取GPU信息
-            if instance.gpu_indexes and instance.worker_id:
-                for gpu_index in instance.gpu_indexes:
-                    try:
-                        # 查询该GPU在该时间点附近的负载数据
-                        gpu_loads = await gpu_load_service.get_by_gpu_index(
-                            instance.worker_id, gpu_index, limit=100
-                        )
-
-                        # 找到最接近current_timestamp的数据点
-                        closest_load = None
-                        min_time_diff = float('inf')
-
-                        for load in gpu_loads:
-                            time_diff = abs(load.timestamp - current_timestamp)
-                            if time_diff < min_time_diff:
-                                min_time_diff = time_diff
-                                closest_load = load
-
-                        # 如果找到有效的数据点
-                        if closest_load and closest_load.gpu_utilization is not None:
-                            total_gpu_util += closest_load.gpu_utilization
-                            valid_gpu_count += 1
-                            if closest_load.vram_utilization is not None:
-                                total_vram_util += closest_load.vram_utilization
-                    except Exception:
-                        # 忽略单个GPU查询失败的情况，继续处理其他GPU
-                        pass
-
-            # 计算平均值
-            if valid_gpu_count > 0:
-                avg_gpu_util = round(total_gpu_util / valid_gpu_count, 2)
-                avg_vram_util = (
-                    round(total_vram_util / valid_gpu_count, 2)
-                    if total_vram_util > 0
-                    else 0.0
-                )
-
-                # 添加到使用数据列表
-                time_point = datetime.fromtimestamp(current_timestamp, timezone.utc)
-                usage_data.append(
-                    ResourceUsageResponse(
-                        time=time_point.isoformat(),
-                        gpu_utilization=avg_gpu_util,
-                        vram_usage=avg_vram_util,
-                    )
-                )
-
-            # 移动到下一个时间点
-            current_timestamp += interval
+        usage_data = await _calculate_usage_data(session, instance, hours)
 
         stats.append(
             ResourceUsageStatsResponse(
+                model_id=instance.model_id,
                 model_name=instance.model_name,
                 usage_data=usage_data,
             )

@@ -6,7 +6,7 @@ from fastapi.responses import RedirectResponse, StreamingResponse
 from urllib.parse import urlencode
 from gpustack_runtime.detector import ManufacturerEnum
 from sqlalchemy.orm import selectinload
-from sqlmodel import and_, or_
+from sqlmodel import and_, or_, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 from enum import Enum
 
@@ -32,7 +32,9 @@ from gpustack.schemas.models import (
     ModelCreate,
     ModelUpdate,
     ModelPublic,
+    ModelPublicWithInstances,
     ModelsPublic,
+    ModelsPublicWithInstances,
 )
 from gpustack.schemas.users import User
 from gpustack.schemas.model_routes import (
@@ -40,6 +42,7 @@ from gpustack.schemas.model_routes import (
     ModelRouteTarget,
     TargetStateEnum,
 )
+from gpustack.schemas.model_catalog import ModelCatalog
 from gpustack.server.services import (
     ModelService,
     WorkerService,
@@ -483,3 +486,74 @@ async def revoke_model_access_cache(
     if extra_user_ids:
         user_ids.update(extra_user_ids)
     await delete_accessible_model_cache(session, *user_ids)
+
+
+@router.get("/by-catalog/{catalog_id}", response_model=ModelsPublicWithInstances)
+async def get_models_by_catalog(
+    session: SessionDep,
+    catalog_id: int,
+):
+    """
+    根据 model_catalog 的 id 获取当前已经部署的模型实例
+
+    逻辑：
+    1. 找到对应 model_catalog 的 spec 对应的 local_path
+    2. 去 model_instances 中找到对应的记录
+    3. 找到对应的 model
+    4. 返回多个 model 下带 model_instance 的记录
+    """
+    # 查询模型目录及其规格
+    model_catalog = await session.get(
+        ModelCatalog, catalog_id, options=[selectinload(ModelCatalog.specs)]
+    )
+    if not model_catalog:
+        raise NotFoundException(
+            message=f"Model catalog with id '{catalog_id}' not found"
+        )
+
+    # 收集所有规格的 local_path
+    local_paths = []
+    for spec in model_catalog.specs:
+        if spec.local_path:
+            local_paths.append(spec.local_path)
+
+    if not local_paths:
+        # 没有找到 local_path，返回空结果
+        return ModelsPublicWithInstances(
+            items=[], pagination={"page": 1, "perPage": 10, "total": 0, "totalPage": 0}
+        )
+
+    # 查询包含这些 local_path 的模型
+    models_result = await session.exec(
+        select(Model)
+        .where(Model.local_path.in_(local_paths))
+        .options(selectinload(Model.instances))
+    )
+    models = models_result.all()
+
+    # 构建响应
+    items = []
+    for model in models:
+        # 确保模型实例被正确加载
+        if not hasattr(model, 'instances'):
+            # 如果没有加载实例，手动查询
+            instances_result = await session.exec(
+                select(ModelInstance).where(ModelInstance.model_id == model.id)
+            )
+            model.instances = instances_result.all()
+
+        # 构建包含实例的模型公共信息
+        model_data = model.model_dump()
+        model_data['instances'] = model.instances
+        model_public = ModelPublicWithInstances(**model_data)
+        items.append(model_public)
+
+    return ModelsPublicWithInstances(
+        items=items,
+        pagination={
+            "page": 1,
+            "perPage": len(items),
+            "total": len(items),
+            "totalPage": 1,
+        },
+    )

@@ -325,7 +325,14 @@ class ModelPublic(
     created_by: Optional[int] = None
 
 
+class ModelPublicWithInstances(ModelPublic):
+    """包含实例的模型公共信息"""
+
+    instances: List["ModelInstance"] = []
+
+
 ModelsPublic = PaginatedList[ModelPublic]
+ModelsPublicWithInstances = PaginatedList[ModelPublicWithInstances]
 
 
 # Model Instances
@@ -363,6 +370,7 @@ class ModelInstanceStateEnum(str, Enum):
     ANALYZING = "analyzing"
     UNREACHABLE = "unreachable"
     COMPLETED = "completed"
+    STOPPED = "stopped"
 
     def __str__(self):
         return self.value

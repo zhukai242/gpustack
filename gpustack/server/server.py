@@ -195,6 +195,9 @@ class Server:
         # Start HTTP server for file preview
         self._start_http_server()
 
+        # Start TensorBoard
+        self._start_tensorboard()
+
         await asyncio.gather(*self._async_tasks)
 
     def _start_default_registry_checker(self):
@@ -428,6 +431,96 @@ class Server:
                 logger.debug(f"[DB QUERY COUNT] Total queries since startup: {count}")
 
         self._create_async_task(log_query_count())
+
+    def _start_tensorboard(self):
+        """
+        Start TensorBoard for monitoring training logs
+        """
+        storage_dir = self._config.storage_dir
+        if not storage_dir:
+            logger.warning(
+                "Storage directory not configured, skipping TensorBoard start"
+            )
+            return
+
+        # Check if tensorboard is installed
+        try:
+            import tensorboard
+
+            logger.info(f"TensorBoard module found at: {tensorboard.__file__}")
+        except ImportError:
+            logger.warning("TensorBoard is not installed, skipping TensorBoard start")
+            return
+
+        # Start TensorBoard using subprocess
+        import subprocess
+        import sys
+        import time
+
+        logger.info(f"Current Python interpreter: {sys.executable}")
+        logger.info(f"Python path: {sys.path}")
+
+        # Create a subprocess to run TensorBoard
+        try:
+            # Start TensorBoard in the background using the correct module
+            process = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-c",
+                    "from tensorboard.main import run_main; run_main()",
+                    "--logdir",
+                    storage_dir,
+                    "--host",
+                    "0.0.0.0",
+                    "--port",
+                    "6006",
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+
+            # Add to subprocess list for later cleanup
+            self._sub_processes.append(process)
+
+            logger.info(
+                f"TensorBoard started on http://0.0.0.0:6006, "
+                f"logging directory: {storage_dir}, "
+                f"PID: {process.pid}"
+            )
+
+            # Check if TensorBoard started successfully
+            time.sleep(3)  # Give it more time to start
+            returncode = process.poll()
+            if returncode is not None:
+                # TensorBoard process exited immediately
+                stdout, stderr = process.communicate()
+                logger.error(f"TensorBoard exited with code {returncode}")
+                if stdout:
+                    logger.error(f"TensorBoard stdout: {stdout}")
+                if stderr:
+                    logger.error(f"TensorBoard stderr: {stderr}")
+                # Remove from subprocess list
+                if process in self._sub_processes:
+                    self._sub_processes.remove(process)
+            else:
+                # TensorBoard is running, check if port is open
+                try:
+                    import socket
+
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    result = sock.connect_ex(("0.0.0.0", 6006))
+                    if result == 0:
+                        logger.info("TensorBoard port 6006 is open and accessible")
+                    else:
+                        logger.error(
+                            f"TensorBoard port 6006 is not accessible, error code: {result}"
+                        )
+                    sock.close()
+                except Exception as e:
+                    logger.error(f"Failed to check TensorBoard port: {e}")
+        except Exception as e:
+            logger.error(f"Failed to start TensorBoard: {e}")
 
     @staticmethod
     def _setup_data_dir(data_dir: str):
