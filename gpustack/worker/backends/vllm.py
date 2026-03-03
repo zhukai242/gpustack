@@ -14,13 +14,13 @@ from gpustack_runtime.deployer import (
     ContainerPort,
     ContainerRestartPolicyEnum,
 )
-from gpustack_runtime.detector import ManufacturerEnum
-
+from gpustack_runtime.detector import ManufacturerEnum, manufacturer_to_backend
 from gpustack.schemas.models import (
     ModelInstance,
     SpeculativeAlgorithmEnum,
     SpeculativeConfig,
     ModelInstanceDeploymentMetadata,
+    is_audio_model,
     is_omni_model,
 )
 from gpustack.utils import network
@@ -341,7 +341,7 @@ class VLLMServer(InferenceServer):
 
         vllm_speculative_algorithm_mapping = {
             SpeculativeAlgorithmEnum.EAGLE3: "eagle3",
-            SpeculativeAlgorithmEnum.MTP: "deepseek_mtp",
+            SpeculativeAlgorithmEnum.MTP: "mtp",
             SpeculativeAlgorithmEnum.NGRAM: "ngram",
         }
 
@@ -422,18 +422,18 @@ class VLLMServer(InferenceServer):
                 ]
             )
 
-        if not is_omni:
-            derived_max_model_len = self._derive_max_model_len()
+        is_audio = is_audio_model(self._model)
+
+        if not is_omni and not is_audio:
+
             specified_max_model_len = find_parameter(
                 self._model.backend_parameters,
                 ["max-model-len"],
             )
-            if (
-                specified_max_model_len is None
-                and derived_max_model_len
-                and derived_max_model_len > 8192
-            ):
-                arguments.extend(["--max-model-len", "8192"])
+            if specified_max_model_len is None:
+                derived_max_model_len = self._derive_max_model_len()
+                if derived_max_model_len and derived_max_model_len > 8192:
+                    arguments.extend(["--max-model-len", "8192"])
 
         auto_parallelism_arguments = get_auto_parallelism_arguments(
             self._model.backend_parameters,
@@ -467,7 +467,10 @@ class VLLMServer(InferenceServer):
 
         if self._model.extended_kv_cache and self._model.extended_kv_cache.enabled:
             vendor, _, _ = self._get_device_info()
-            if vendor in [ManufacturerEnum.NVIDIA, ManufacturerEnum.AMD]:
+            if vendor in {
+                manufacturer_to_backend(ManufacturerEnum.NVIDIA),
+                manufacturer_to_backend(ManufacturerEnum.AMD),
+            }:
                 arguments.extend(
                     [
                         "--kv-transfer-config",

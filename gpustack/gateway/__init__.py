@@ -308,6 +308,7 @@ def ext_auth_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
             "allowed_upstream_headers": [
                 {"exact": "X-Mse-Consumer"},
                 {"exact": "Authorization"},
+                {"exact": "cookie"},
             ]
         },
         "endpoint": {
@@ -355,6 +356,7 @@ def ai_statistics_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
     resource_name = "gpustack-ai-statistics"
     expected_spec = WasmPluginSpec(
         defaultConfig={
+            "enable_content_types": envs.GATEWAY_AI_STATISTICS_PLUGIN_CONTENT_TYPES,
             "attributes": [
                 {
                     "apply_to_log": True,
@@ -363,7 +365,7 @@ def ai_statistics_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
                     "value": "x-mse-consumer",
                     "value_source": "request_header",
                 }
-            ]
+            ],
         },
         defaultConfigDisable=False,
         failStrategy="FAIL_OPEN",
@@ -402,12 +404,14 @@ def model_router_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
 
 def model_pre_route_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
     resource_name = "gpustack-set-model-pre-route"
-    enabled_paths = supported_openai_routes.copy()
-    enabled_paths.append("/model/proxy")
+    enabled_path_suffixes = supported_openai_routes.copy()
+    enabled_path_prefixes = ["/model/proxy"]
     expected_spec = WasmPluginSpec(
         defaultConfig={
-            'modelToHeader': router_header_key,
-            'enableOnPathSuffix': enabled_paths,
+            'clusterNameHeader': 'X-GPUStack-Model',
+            'routeNameHeader': 'X-GPUStack-Route-Name',
+            'enableOnPathSuffix': enabled_path_suffixes,
+            'enableOnPathPrefix': enabled_path_prefixes,
         },
         defaultConfigDisable=False,
         failStrategy="FAIL_OPEN",
@@ -416,7 +420,7 @@ def model_pre_route_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
         phase="AUTHN",
         priority=90,
         url=get_plugin_url_with_name_and_version(
-            name="model-router", version="2.0.0", cfg=cfg
+            name="gpustack-set-header-pre-route", version="1.0.0", cfg=cfg
         ),
     )
     return resource_name, expected_spec
@@ -619,6 +623,7 @@ async def ensure_gateway_timeout(cfg: Config, api_client: k8s_client.ApiClient):
                 name=higress_config_name, namespace=namespace
             )
         )
+        should_update = False
         config_data: str = higress_config.data["higress"]
         config = yaml.safe_load(config_data)
         idle_timeout = (
@@ -629,6 +634,22 @@ async def ensure_gateway_timeout(cfg: Config, api_client: k8s_client.ApiClient):
         if idle_timeout is None or str(idle_timeout) != f"{envs.PROXY_TIMEOUT}":
             config.setdefault("downstream", {})["idleTimeout"] = envs.PROXY_TIMEOUT
             higress_config.data["higress"] = yaml.safe_dump(config)
+            should_update = True
+        upstream_idle_timeout = (
+            config.get("upstream", {}).get("idleTimeout")
+            if isinstance(config, dict)
+            else None
+        )
+        if (
+            upstream_idle_timeout is None
+            or str(upstream_idle_timeout) != f"{envs.PROXY_UPSTREAM_IDLE_TIMEOUT}"
+        ):
+            config.setdefault("upstream", {})[
+                "idleTimeout"
+            ] = envs.PROXY_UPSTREAM_IDLE_TIMEOUT
+            higress_config.data["higress"] = yaml.safe_dump(config)
+            should_update = True
+        if should_update:
             await core_v1_client.replace_namespaced_config_map(
                 name=higress_config_name,
                 namespace=namespace,
@@ -651,6 +672,14 @@ def spec_replace(
     return expected_spec
 
 
+def validate_ai_statistics_plugin_content_types():
+    for content_type in envs.GATEWAY_AI_STATISTICS_PLUGIN_CONTENT_TYPES:
+        if content_type == "audio/pcm":
+            raise ValueError(
+                "audio/pcm content type is not supported in ai statistics plugin"
+            )
+
+
 def initialize_gateway(cfg: Config, timeout: int = 60, interval: int = 5):
     if cfg.gateway_mode == GatewayModeEnum.disabled:
         return
@@ -660,6 +689,7 @@ def initialize_gateway(cfg: Config, timeout: int = 60, interval: int = 5):
         GatewayModeEnum.embedded,
         GatewayModeEnum.external,
     ]:
+        validate_ai_statistics_plugin_content_types()
         plugin_list: List[Tuple[str, WasmPluginSpec]] = [
             ext_auth_plugin(cfg=cfg),
             ai_statistics_plugin(cfg=cfg),

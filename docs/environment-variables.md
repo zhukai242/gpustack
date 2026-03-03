@@ -44,20 +44,20 @@ The **Applies to** column indicates where the environment variable should be set
 
 ### Database Configuration
 
-| Variable                                 | Description                                                                | Default | Applies to |
-| ---------------------------------------- | -------------------------------------------------------------------------- | ------- | ---------- |
-| `GPUSTACK_DB_ECHO`                       | Enable database query logging.                                             | `false` | Server     |
-| `GPUSTACK_DB_POOL_SIZE`                  | Database connection pool size.                                             | `10`    | Server     |
-| `GPUSTACK_DB_MAX_OVERFLOW`               | Database connection pool max overflow.                                     | `10`    | Server     |
-| `GPUSTACK_DB_POOL_TIMEOUT`               | Database connection pool timeout in seconds.                               | `30`    | Server     |
-| `GPUSTACK_DB_SUBSCRIBE_INIT_CONCURRENCY` | Maximum concurrent subscriptions that can perform initial DB list queries. | `20`    | Server     |
+| Variable                   | Description                                  | Default | Applies to |
+| -------------------------- | -------------------------------------------- | ------- | ---------- |
+| `GPUSTACK_DB_ECHO`         | Enable database query logging.               | `false` | Server     |
+| `GPUSTACK_DB_POOL_SIZE`    | Database connection pool size.               | `30`    | Server     |
+| `GPUSTACK_DB_MAX_OVERFLOW` | Database connection pool max overflow.       | `20`    | Server     |
+| `GPUSTACK_DB_POOL_TIMEOUT` | Database connection pool timeout in seconds. | `30`    | Server     |
 
 ### Network Configuration
 
-| Variable                         | Description                      | Default | Applies to      |
-| -------------------------------- | -------------------------------- | ------- | --------------- |
-| `GPUSTACK_PROXY_TIMEOUT_SECONDS` | Proxy timeout in seconds.        | `1800`  | Server          |
-| `GPUSTACK_TCP_CONNECTOR_LIMIT`   | HTTP client TCP connector limit. | `1000`  | Server & Worker |
+| Variable                                       | Description                                  | Default | Applies to      |
+| ---------------------------------------------- | -------------------------------------------- | ------- | --------------- |
+| `GPUSTACK_PROXY_TIMEOUT_SECONDS`               | Proxy timeout in seconds.                    | `1800`  | Server          |
+| `GPUSTACK_PROXY_UPSTREAM_IDLE_TIMEOUT_SECONDS` | Upstream idle timeout in seconds for higress | `300`   | Server          |
+| `GPUSTACK_TCP_CONNECTOR_LIMIT`                 | HTTP client TCP connector limit.             | `1000`  | Server & Worker |
 
 ### Server Cache Configuration
 
@@ -73,12 +73,13 @@ The **Applies to** column indicates where the environment variable should be set
 
 ### Gateway Configuration
 
-| Variable                                  | Description                                                                         | Default | Applies to |
-| ----------------------------------------- | ----------------------------------------------------------------------------------- | ------- | ---------- |
-| `GPUSTACK_HIGRESS_EXT_AUTH_TIMEOUT_MS`    | Higress external authentication timeout in milliseconds.                            | `30000` | Server     |
-| `GPUSTACK_GATEWAY_PORT_CHECK_INTERVAL`    | The interval in seconds of GPUStack Server checking embedded gateway listening port | `2`     | Server     |
-| `GPUSTACK_GATEWAY_PORT_CHECK_RETRY_COUNT` | The retry count of GPUStack Server checking embedded gateway listening port         | `300`   | Server     |
-| `GPUSTACK_GATEWAY_EXTERNAL_METRICS_URL`   | The external gateway metrics url. e.g. `http://<gateway-ip>:15020/stats/prometheus` | None    | Server     |
+| Variable                                              | Description                                                                                                                        | Default                              | Applies to |
+| ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ | ---------- |
+| `GPUSTACK_HIGRESS_EXT_AUTH_TIMEOUT_MS`                | Higress external authentication timeout in milliseconds.                                                                           | `30000`                              | Server     |
+| `GPUSTACK_GATEWAY_PORT_CHECK_INTERVAL`                | The interval in seconds of GPUStack Server checking embedded gateway listening port                                                | `2`                                  | Server     |
+| `GPUSTACK_GATEWAY_PORT_CHECK_RETRY_COUNT`             | The retry count of GPUStack Server checking embedded gateway listening port                                                        | `300`                                | Server     |
+| `GPUSTACK_GATEWAY_EXTERNAL_METRICS_URL`               | The external gateway metrics url. e.g. `http://<gateway-ip>:15020/stats/prometheus`                                                | None                                 | Server     |
+| `GPUSTACK_GATEWAY_AI_STATISTICS_PLUGIN_CONTENT_TYPES` | Comma-separated list of content-types to be monitored by the ai-statistics plugin. Each value should be a valid HTTP Content-Type. | `application/json,text/event-stream` | Server     |
 
 ### Cluster Configuration
 

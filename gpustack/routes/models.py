@@ -26,10 +26,12 @@ from gpustack.schemas.models import (
 )
 from gpustack.schemas.clusters import Cluster
 from gpustack.schemas.workers import GPUDeviceStatus, Worker
+from gpustack.server.db import async_session
 from gpustack.server.deps import ListParamsDep, SessionDep
 from gpustack.schemas.models import (
     Model,
     ModelCreate,
+    ModelSpecBase,
     ModelUpdate,
     ModelPublic,
     ModelsPublic,
@@ -67,7 +69,6 @@ class ModelStateFilterEnum(str, Enum):
 
 @router.get("", response_model=ModelsPublic)
 async def get_models(
-    session: SessionDep,
     params: ModelListParams = Depends(),
     state: Optional[ModelStateFilterEnum] = Query(
         default=None,
@@ -99,43 +100,44 @@ async def get_models(
             media_type="text/event-stream",
         )
 
-    extra_conditions = []
-    if categories:
-        conditions = build_category_conditions(session, Model, categories)
-        extra_conditions.append(or_(*conditions))
+    async with async_session() as session:
+        extra_conditions = []
+        if categories:
+            conditions = build_category_conditions(session, Model, categories)
+            extra_conditions.append(or_(*conditions))
 
-    if state is None:
-        pass
-    elif state == ModelStateFilterEnum.READY:
-        extra_conditions.append(Model.ready_replicas > 0)
-    elif state == ModelStateFilterEnum.NOT_READY:
-        extra_conditions.append(and_(Model.ready_replicas == 0, Model.replicas > 0))
-    elif state == ModelStateFilterEnum.STOPPED:
-        extra_conditions.append(Model.replicas == 0)
+        if state is None:
+            pass
+        elif state == ModelStateFilterEnum.READY:
+            extra_conditions.append(Model.ready_replicas > 0)
+        elif state == ModelStateFilterEnum.NOT_READY:
+            extra_conditions.append(and_(Model.ready_replicas == 0, Model.replicas > 0))
+        elif state == ModelStateFilterEnum.STOPPED:
+            extra_conditions.append(Model.replicas == 0)
 
-    order_by = params.order_by
-    if order_by:
-        # When sorting by "source", add additional sorting fields for deterministic ordering
-        new_order_by = []
-        for field, direction in order_by:
-            new_order_by.append((field, direction))
-            if field == "source":
-                new_order_by.append(("huggingface_repo_id", direction))
-                new_order_by.append(("huggingface_filename", direction))
-                new_order_by.append(("model_scope_model_id", direction))
-                new_order_by.append(("model_scope_file_path", direction))
-                new_order_by.append(("local_path", direction))
-        order_by = new_order_by
+        order_by = params.order_by
+        if order_by:
+            # When sorting by "source", add additional sorting fields for deterministic ordering
+            new_order_by = []
+            for field, direction in order_by:
+                new_order_by.append((field, direction))
+                if field == "source":
+                    new_order_by.append(("huggingface_repo_id", direction))
+                    new_order_by.append(("huggingface_filename", direction))
+                    new_order_by.append(("model_scope_model_id", direction))
+                    new_order_by.append(("model_scope_file_path", direction))
+                    new_order_by.append(("local_path", direction))
+            order_by = new_order_by
 
-    return await Model.paginated_by_query(
-        session=session,
-        fuzzy_fields=fuzzy_fields,
-        extra_conditions=extra_conditions,
-        page=params.page,
-        per_page=params.perPage,
-        fields=fields,
-        order_by=order_by,
-    )
+        return await Model.paginated_by_query(
+            session=session,
+            fuzzy_fields=fuzzy_fields,
+            extra_conditions=extra_conditions,
+            page=params.page,
+            per_page=params.perPage,
+            fields=fields,
+            order_by=order_by,
+        )
 
 
 @router.get("/{id}", response_model=ModelPublic)
@@ -190,11 +192,7 @@ async def _get_model(
 
 
 @router.get("/{id}/instances", response_model=ModelInstancesPublic)
-async def get_model_instances(session: SessionDep, id: int, params: ListParamsDep):
-    model = await Model.one_by_id(session, id, options=[selectinload(Model.instances)])
-    if not model:
-        raise NotFoundException(message="Model not found")
-
+async def get_model_instances(id: int, params: ListParamsDep):
     if params.watch:
         fields = {"model_id": id}
         return StreamingResponse(
@@ -202,24 +200,34 @@ async def get_model_instances(session: SessionDep, id: int, params: ListParamsDe
             media_type="text/event-stream",
         )
 
-    instances = model.instances
-    count = len(instances)
-    total_page = math.ceil(count / params.perPage)
-    pagination = Pagination(
-        page=params.page,
-        perPage=params.perPage,
-        total=count,
-        totalPage=total_page,
-    )
+    async with async_session() as session:
+        model = await Model.one_by_id(
+            session, id, options=[selectinload(Model.instances)]
+        )
+        if not model:
+            raise NotFoundException(message="Model not found")
 
-    return ModelInstancesPublic(items=instances, pagination=pagination)
+        instances = model.instances
+        count = len(instances)
+        total_page = math.ceil(count / params.perPage)
+        pagination = Pagination(
+            page=params.page,
+            perPage=params.perPage,
+            total=count,
+            totalPage=total_page,
+        )
+
+        return ModelInstancesPublic(items=instances, pagination=pagination)
 
 
 async def validate_model_in(
-    session: SessionDep, model_in: Union[ModelCreate, ModelUpdate]
+    session: SessionDep,
+    model_in: Union[ModelCreate, ModelUpdate, ModelSpecBase],
+    *,
+    cluster_id: Optional[int] = None,
 ):
     if model_in.gpu_selector is not None and model_in.replicas > 0:
-        await validate_gpu_ids(session, model_in)
+        await validate_gpu_ids(session, model_in, cluster_id=cluster_id)
 
     if model_in.backend_parameters:
         param_gpu_layers = find_parameter(
@@ -255,8 +263,14 @@ async def validate_model_in(
 
 
 async def validate_gpu_ids(  # noqa: C901
-    session: SessionDep, model_in: Union[ModelCreate, ModelUpdate]
+    session: SessionDep,
+    model_in: Union[ModelCreate, ModelUpdate, ModelSpecBase],
+    *,
+    cluster_id: Optional[int] = None,
 ):
+    effective_cluster_id = (
+        cluster_id if cluster_id is not None else getattr(model_in, "cluster_id", None)
+    )
 
     if (
         model_in.gpu_selector
@@ -291,8 +305,13 @@ async def validate_gpu_ids(  # noqa: C901
         gpu_index = safe_int(matched.get("gpu_index"), -1)
         worker_name_set.add(worker_name)
 
+        if effective_cluster_id is None:
+            raise BadRequestException(
+                message=f"A cluster context is required for manual GPU selection, but was not provided. Cannot validate worker '{worker_name}'."
+            )
+
         worker = await WorkerService(session).get_by_cluster_id_name(
-            model_in.cluster_id, worker_name
+            effective_cluster_id, worker_name
         )
         if not worker:
             raise BadRequestException(message=f"Worker {worker_name} not found")

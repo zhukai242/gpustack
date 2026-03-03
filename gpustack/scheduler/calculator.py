@@ -18,10 +18,12 @@ from gpustack.policies.worker_filters.gpu_matching_filter import GPUMatchingFilt
 from gpustack.policies.worker_filters.label_matching_filter import LabelMatchingFilter
 from gpustack.policies.worker_filters.local_path_filter import LocalPathFilter
 from gpustack.schemas.models import (
+    BackendEnum,
     Model,
     SourceEnum,
     get_mmproj_filename,
     CategoryEnum,
+    is_audio_model,
 )
 from gpustack.schemas.workers import Worker
 from gpustack.utils.compat_importlib import pkg_resources
@@ -709,6 +711,13 @@ async def get_pretrained_config_with_workers(
             if config_dict:
                 return PretrainedConfig.from_dict(config_dict)
 
+            # If config_dict is None for LOCAL_PATH, provide a clearer error message
+            if model.source == SourceEnum.LOCAL_PATH:
+                raise ValueError(
+                    f"Model path '{model.local_path}' does not exist or config.json is not found. "
+                    f"Please ensure the model files are available at the specified path."
+                )
+
         if model.env and model.env.get("GPUSTACK_SKIP_MODEL_EVALUATION"):
             return pretrained_config
 
@@ -737,13 +746,43 @@ def should_fallback_load_config_json(e: Exception, model: Model) -> bool:
     Returns:
         bool: True if should fallback to loading config.json, False otherwise
     """
-    if model.source not in (SourceEnum.HUGGING_FACE, SourceEnum.MODEL_SCOPE):
+
+    # For LOCAL_PATH models, the path must be a valid directory
+    if model.source == SourceEnum.LOCAL_PATH and not (
+        model.local_path and os.path.isdir(model.local_path)
+    ):
         return False
 
-    if model.backend_version is not None or isinstance(e, ImportError):
+    if model.backend == BackendEnum.VLLM and is_audio_model(model):
+        # TODO(michelia): Qwen3-ASR is currently supported by vLLM but not yet by Hugging Face Transformers.
+        # Track upstream progress: https://github.com/huggingface/transformers/issues/43837
         return True
 
-    return False
+    # For very new HF checkpoints, AutoConfig may fail on an older transformers.
+    # Falling back to reading config.json avoids requiring a transformers upgrade.
+    #
+    # Example upstream error message (may vary by transformers version):
+    """
+    The checkpoint you are trying to load has model type `{config_dict['model_type']}`
+    but Transformers does not recognize this architecture. This could be because of an
+    issue with the checkpoint, or because your version of Transformers is out of date.
+    You can update Transformers with the command `pip install --upgrade transformers`.
+    If this does not work, and the checkpoint is very new, then there may not be a
+    release version that supports this model yet. In this case, you can get the most
+    up-to-date code by installing Transformers from source with the command
+    `pip install git+https://github.com/huggingface/transformers.git`
+    """
+    msg = str(e).lower()
+    if (
+        "update transformers" in msg
+        or "pip install --upgrade transformers" in msg
+        or "does not recognize this architecture" in msg
+        or "install transformers from source" in msg
+    ):
+        return True
+
+    # Fallback for backend version specified or import errors
+    return model.backend_version is not None or isinstance(e, ImportError)
 
 
 async def check_diffusers_model_index_from_workers(

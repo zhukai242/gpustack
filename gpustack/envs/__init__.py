@@ -4,17 +4,15 @@ import os
 
 # Database configuration
 DB_ECHO = os.getenv("GPUSTACK_DB_ECHO", "false").lower() == "true"
-DB_POOL_SIZE = int(os.getenv("GPUSTACK_DB_POOL_SIZE", 10))
-DB_MAX_OVERFLOW = int(os.getenv("GPUSTACK_DB_MAX_OVERFLOW", 10))
+DB_POOL_SIZE = int(os.getenv("GPUSTACK_DB_POOL_SIZE", 30))
+DB_MAX_OVERFLOW = int(os.getenv("GPUSTACK_DB_MAX_OVERFLOW", 20))
 DB_POOL_TIMEOUT = int(os.getenv("GPUSTACK_DB_POOL_TIMEOUT", 30))
-# Maximum concurrent subscriptions that can perform initial DB list queries
-# This prevents connection pool exhaustion when many workers reconnect simultaneously
-DB_SUBSCRIBE_INIT_CONCURRENCY = int(
-    os.getenv("GPUSTACK_DB_SUBSCRIBE_INIT_CONCURRENCY", 20)
-)
 
 # Proxy configuration
 PROXY_TIMEOUT = int(os.getenv("GPUSTACK_PROXY_TIMEOUT_SECONDS", 1800))
+PROXY_UPSTREAM_IDLE_TIMEOUT = int(
+    os.getenv("GPUSTACK_PROXY_UPSTREAM_IDLE_TIMEOUT_SECONDS", 300)
+)
 
 # HTTP client TCP connector configuration
 TCP_CONNECTOR_LIMIT = int(os.getenv("GPUSTACK_TCP_CONNECTOR_LIMIT", 1000))
@@ -96,6 +94,15 @@ GATEWAY_MIRROR_INGRESS_NAME = os.getenv(
 )
 
 GATEWAY_EXTERNAL_METRICS_URL = os.getenv("GPUSTACK_GATEWAY_EXTERNAL_METRICS_URL", None)
+
+GATEWAY_AI_STATISTICS_PLUGIN_CONTENT_TYPES = [
+    ct.strip()
+    for ct in os.getenv(
+        "GPUSTACK_GATEWAY_AI_STATISTICS_PLUGIN_CONTENT_TYPES",
+        "application/json,text/event-stream",
+    ).split(",")
+    if ct.strip()
+]
 
 DEFAULT_CLUSTER_KUBERNETES = (
     os.getenv("GPUSTACK_DEFAULT_CLUSTER_KUBERNETES", "false").lower() == "true"

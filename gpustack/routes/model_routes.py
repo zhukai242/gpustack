@@ -28,6 +28,7 @@ from gpustack.schemas.model_routes import (
 )
 from gpustack.schemas.model_provider import ModelProvider
 from gpustack.schemas.models import Model
+from gpustack.server.db import async_session
 from gpustack.server.deps import SessionDep, CurrentUserDep
 from gpustack.schemas.users import User
 from gpustack.api.exceptions import (
@@ -54,14 +55,12 @@ my_models_router = APIRouter()
 
 @router.get("", response_model=ModelRoutesPublic, response_model_exclude_none=True)
 async def get_model_routes(
-    session: SessionDep,
     params: ModelRouteListParams = Depends(),
     name: str = None,
     search: str = None,
     categories: Optional[List[str]] = Query(None, description="Filter by categories."),
 ):
     return await _get_model_routes(
-        session=session,
         params=params,
         name=name,
         search=search,
@@ -70,7 +69,6 @@ async def get_model_routes(
 
 
 async def _get_model_routes(
-    session: AsyncSession,
     params: ModelRouteListParams,
     name: str = None,
     search: str = None,
@@ -99,20 +97,21 @@ async def _get_model_routes(
             media_type="text/event-stream",
         )
 
-    extra_conditions = []
-    if categories:
-        conditions = build_category_conditions(session, Model, categories)
-        extra_conditions.append(or_(*conditions))
+    async with async_session() as session:
+        extra_conditions = []
+        if categories:
+            conditions = build_category_conditions(session, Model, categories)
+            extra_conditions.append(or_(*conditions))
 
-    return await target_class.paginated_by_query(
-        session=session,
-        fields=fields,
-        fuzzy_fields=fuzzy_fields,
-        page=params.page,
-        per_page=params.perPage,
-        order_by=params.order_by,
-        extra_conditions=extra_conditions,
-    )
+        return await target_class.paginated_by_query(
+            session=session,
+            fields=fields,
+            fuzzy_fields=fuzzy_fields,
+            page=params.page,
+            per_page=params.perPage,
+            order_by=params.order_by,
+            extra_conditions=extra_conditions,
+        )
 
 
 @router.get("/{id}", response_model=ModelRoutePublic, response_model_exclude_none=True)
@@ -197,6 +196,8 @@ async def update_model_route(
         raise AlreadyExistsException(
             f"ModelRoute with name '{input.name}' already exists."
         )
+    existing_name = existing.name
+    input_name = input.name
     input_data = input.model_dump(exclude={"targets"})
     try:
         if input.targets is not None or input.name != existing.name:
@@ -213,6 +214,8 @@ async def update_model_route(
             existing, source=input_data, auto_commit=False
         )
         await session.commit()
+        if existing_name != input_name:
+            await revoke_model_access_cache(session=session)
     except Exception as e:
         raise InternalServerErrorException(f"Failed to update ModelRoute '{id}': {e}")
     return await ModelRoute.one_by_id(session=session, id=id)
@@ -709,7 +712,6 @@ async def add_model_authorization(
 @my_models_router.get("", response_model=ModelRoutesPublic)
 async def get_my_models(
     user: CurrentUserDep,
-    session: SessionDep,
     params: ModelRouteListParams = Depends(),
     search: str = None,
     categories: Optional[List[str]] = Query(None, description="Filter by categories."),
@@ -721,7 +723,6 @@ async def get_my_models(
         user_id = user.id
 
     return await _get_model_routes(
-        session=session,
         params=params,
         search=search,
         categories=categories,

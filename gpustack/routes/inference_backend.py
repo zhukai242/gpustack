@@ -7,6 +7,7 @@ import yaml
 from fastapi import APIRouter, Body
 from gpustack_runner.runner import ServiceVersionedRunner, ServiceRunner
 from gpustack_runtime.deployer.__utils__ import compare_versions
+from pydantic import ValidationError
 from starlette.responses import StreamingResponse
 
 from gpustack.api.exceptions import (
@@ -31,6 +32,7 @@ from gpustack.schemas.inference_backend import (
     is_built_in_backend,
 )
 from gpustack.schemas.models import BackendEnum, Model, BackendSourceEnum
+from gpustack.server.db import async_session
 from gpustack.server.deps import ListParamsDep, SessionDep
 from gpustack_runner import list_service_runners
 from gpustack_runtime.detector.ascend import get_ascend_cann_variant
@@ -613,12 +615,14 @@ async def get_inference_backends(  # noqa: C901
             media_type="text/event-stream",
         )
 
-    merged_backends = await merge_runner_versions_to_db(
-        session, with_deprecated=include_deprecated
-    )
+    async with async_session() as session:
+        merged_backends = await merge_runner_versions_to_db(
+            session, with_deprecated=include_deprecated
+        )
 
-    # Get worker GPU information for framework sorting
-    workers = await Worker.all(session)
+        # Get worker GPU information for framework sorting
+        workers = await Worker.all(session)
+
     framework_list = set()
     for worker in workers:
         if worker.status and worker.status.gpu_devices:
@@ -842,23 +846,7 @@ async def update_inference_backend(
         )
 
     if backend_in.version_configs is not None:
-        current_versions = {}
-        if backend.version_configs and backend.version_configs.root:
-            current_versions = backend.version_configs.root
-
-        new_versions = {}
-        if backend_in.version_configs and backend_in.version_configs.root:
-            new_versions = backend_in.version_configs.root
-
-        removed_versions = set(current_versions.keys()) - set(new_versions.keys())
-        for version in removed_versions:
-            is_in_use, model_names = await check_backend_in_use(
-                session, backend.backend_name, version
-            )
-            if is_in_use:
-                raise BadRequestException(
-                    message=f"Cannot remove version name '{version}' of backend '{backend.backend_name}' because it is currently being used by the following models: {', '.join(model_names)}",
-                )
+        await _validate_version_removal(session, backend, backend_in.version_configs)
 
     # Validate version names for custom backends before updating
     if backend.backend_source == BackendSourceEnum.CUSTOM or (
@@ -893,6 +881,7 @@ async def update_inference_backend(
                 for k, v in backend.version_configs.root.items()
                 if v.built_in_frameworks
             }
+            # merge built-in versions with custom versions for update
             built_in_version.update(update_data['version_configs'].root)
             update_data['version_configs'].root = built_in_version
 
@@ -1018,6 +1007,12 @@ async def create_inference_backend_from_yaml(
         # Validate version names for custom backends
         validate_custom_suffix(yaml_data['backend_name'], None)
 
+        # Validate YAML data using Pydantic model to ensure field types are correct
+        try:
+            InferenceBackendCreate.model_validate(yaml_data)
+        except ValidationError as e:
+            raise BadRequestException(message=f"Invalid YAML data: {e}")
+
         # Create the backend
         backend = InferenceBackend(**yaml_data)
         backend = await InferenceBackend.create(session, backend)
@@ -1075,6 +1070,7 @@ async def update_inference_backend_from_yaml(  # noqa: C901
             "version_configs",
             "default_backend_param",
             "default_run_command",
+            "default_entrypoint",
             "health_check_path",
             "description",
             "default_env",
@@ -1112,6 +1108,12 @@ async def update_inference_backend_from_yaml(  # noqa: C901
             yaml_data['version_configs'] = _merge_community_versions(
                 backend, yaml_data.get('version_configs')
             )
+
+        # Validate YAML data using Pydantic model to ensure field types are correct
+        try:
+            InferenceBackendUpdate.model_validate(yaml_data)
+        except ValidationError as e:
+            raise BadRequestException(message=f"Invalid YAML data: {e}")
 
         # Update the backend from YAML data (after normalization)
         await backend.update(session, yaml_data)
@@ -1157,7 +1159,11 @@ async def _validate_version_removal(
     # Get current versions (empty dict if none)
     current_versions = {}
     if backend.version_configs and backend.version_configs.root:
-        current_versions = backend.version_configs.root
+        current_versions = {
+            v: config
+            for v, config in backend.version_configs.root.items()
+            if not config.built_in_frameworks
+        }
 
     # Get new versions (empty dict if none)
     new_versions = {}
