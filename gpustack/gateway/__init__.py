@@ -32,6 +32,7 @@ from gpustack.gateway.labels_annotations import managed_labels, match_labels
 from gpustack.gateway.utils import (
     default_mcp_bridge_name,
     openai_model_prefixes,
+    anthropic_model_exact,
     gpustack_ai_proxy_name,
     gpustack_model_mapper_name,
     mcp_ingress_equal,
@@ -48,6 +49,10 @@ mcp_registry_port = 80
 
 supported_openai_routes = [
     route for v in openai_model_prefixes for route in v.flattened_prefixes()
+]
+
+supported_anthropic_routes = [
+    route for v in anthropic_model_exact for route in v.flattened_prefixes()
 ]
 
 async_gateway_config: Configuration = None
@@ -309,6 +314,8 @@ def ext_auth_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
                 {"exact": "X-Mse-Consumer"},
                 {"exact": "Authorization"},
                 {"exact": "cookie"},
+                {"exact": "X-GPUStack-Original-Cookies"},
+                {"exact": "X-GPUStack-Original-Authorization"},
             ]
         },
         "endpoint": {
@@ -382,7 +389,7 @@ def ai_statistics_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
 
 def model_router_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
     resource_name = "gpustack-model-router"
-    enabled_paths = supported_openai_routes.copy()
+    enabled_paths = supported_openai_routes + supported_anthropic_routes
     enabled_paths.append("/model/proxy")
     expected_spec = WasmPluginSpec(
         defaultConfig={
@@ -404,7 +411,7 @@ def model_router_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
 
 def model_pre_route_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
     resource_name = "gpustack-set-model-pre-route"
-    enabled_path_suffixes = supported_openai_routes.copy()
+    enabled_path_suffixes = supported_openai_routes + supported_anthropic_routes
     enabled_path_prefixes = ["/model/proxy"]
     expected_spec = WasmPluginSpec(
         defaultConfig={
@@ -474,12 +481,20 @@ def transformer_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
                 transform_header(
                     "rename",
                     HeaderRule(
-                        newKey="x-higress-llm-model",
                         oldKey="x-gpustack-model",
+                        newKey="x-higress-llm-model",
                     ),
                     HeaderRule(
                         oldKey="x-gpustack-original-path",
                         newKey=":path",
+                    ),
+                    HeaderRule(
+                        oldKey="x-gpustack-original-cookies",
+                        newKey="cookie",
+                    ),
+                    HeaderRule(
+                        oldKey="x-gpustack-original-authorization",
+                        newKey="authorization",
                     ),
                 ),
                 transform_header(
@@ -494,6 +509,14 @@ def transformer_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
                     ),
                     HeaderRule(
                         key=":path",
+                        strategy="RETAIN_LAST",
+                    ),
+                    HeaderRule(
+                        key="cookie",
+                        strategy="RETAIN_LAST",
+                    ),
+                    HeaderRule(
+                        key="authorization",
                         strategy="RETAIN_LAST",
                     ),
                 ),

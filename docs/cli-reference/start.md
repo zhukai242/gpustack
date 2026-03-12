@@ -11,6 +11,25 @@ Run GPUStack server or worker.
 gpustack start [OPTIONS]
 ```
 
+!!! note "CLI Argument Placement"
+
+    In Docker, the actual command executed by `docker run` consists of **ENTRYPOINT** and **COMMAND**.
+
+    The `gpustack/gpustack` image sets its `ENTRYPOINT`, which can be simply understood as
+    (or considered equivalent to):
+
+        gpustack start
+
+    Therefore, CLI arguments for `gpustack start` must be placed after the image name,
+    at the end of the `docker run` command, rather than as options to `docker run` itself.
+
+    Example:
+
+        docker run [docker options] gpustack/gpustack <start-args>
+
+    In Kubernetes, these arguments should be specified using the `args` field
+    in the container specification.
+
 ## Configurations
 
 ### Common Options
@@ -104,7 +123,7 @@ gpustack start [OPTIONS]
 | `--log-dir` value                        | (empty)                                | Directory to store logs.                                                                                                                                                                        |
 | `--system-reserved` value                | (empty)                                | The system reserves resources for the worker during scheduling, measured in GiB. By default, no resources are reserved, Example: '{\"ram\": 2, \"vram\": 1}'.                                   |
 | `--enable-hf-transfer`                   | `False`                                | Enable faster downloads from the Hugging Face Hub using hf_transfer. https://huggingface.co/docs/huggingface_hub/v0.29.3/package_reference/environment_variables#hfhubenablehftransfer          |
-| `--enable-hf-xet`                        | `False`                                | Enable downloading model files using Hugging Face Xet.                                                                                                                                          |
+| `--enable-hf-xet`                        | `False`                                | [Deprecated] Enable downloading model files using Hugging Face Xet.                                                                                                                                          |
 | `--worker-ifname` value                  | (empty)                                | Network interface name of the worker node. Auto-detected by default.                                                                                                                            |
 | `--proxy-mode` value                     | (empty)                                | Proxy mode for server accessing model instances: direct (server connects directly) or worker (via worker proxy). Default value is direct for embedded worker, and worker for standalone worker. |
 | `--benchmark-image-repo` value           | `gpustack/benchmark-runner`            | Override the default benchmark image repo for the GPUStack benchmark container.                                                                                                                 |
@@ -184,6 +203,5 @@ system_reserved:
   ram: 2
   vram: 1
 enable_hf_transfer: false
-enable_hf_xet: false
 proxy_mode: worker
 ```

@@ -52,6 +52,9 @@ def class_key(suffix: str):
     The generated key will be "{ClassName}.{suffix}", e.g., "Worker.all_cached"
     """
 
+    # FIXME: The kwargs should be taken into account for more fine-grained cache keys,
+    # but for now we just use the class name and suffix for simplicity.
+    # Using kwargs as key causes https://github.com/gpustack/gpustack/issues/4813.
     def builder(f, *args, **kwargs):
         cls = args[0]  # First arg is cls for classmethod
         return f"{cls.__name__}.{suffix}"

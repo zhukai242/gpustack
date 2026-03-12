@@ -18,7 +18,7 @@ If your system supports a container toolkit, install and configure it as needed 
 
 ### Container Images
 
-GPUStack offers an [Image Selector](https://docs.gpustack.ai/image-selector/) site to help users easily pick the images they want to download. For more advanced or automated syncing, GPUStack also provides image management commands:
+GPUStack offers an [Image Selector](https://docs.gpustack.ai/latest/image-selector/) site to help users easily pick the images they want to download. For more advanced or automated syncing, GPUStack also provides image management commands:
 
 - `gpustack copy-images`: Sync images from one registry to another
 - `gpustack save-images`: Download images and save them locally
@@ -136,13 +136,12 @@ For more details on `load-images`, see the [CLI Reference](../cli-reference/load
 
 ## Installation
 
-After preparing the internal container registry with the required images, you can install GPUStack in the air-gapped environment. Port 80 is the primary server endpoint, while port 10161 is used to expose metrics for observability.
+After preparing the internal container registry with the required images, you can install GPUStack in the air-gapped environment.
 
 ```diff
  sudo docker run -d --name gpustack \
      --restart unless-stopped \
      -p 80:80 \
-     -p 10161:10161 \
      --volume gpustack-data:/var/lib/gpustack \
 -    gpustack/gpustack
 +    <your_internal_registry>/gpustack/gpustack \
